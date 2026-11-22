@@ -605,13 +605,21 @@ class CloneCleanupTests(IntakeCase):
                 self.assertFailed(self.run_intake("--xlsx-document", "7", flag, value), 2, "must be positive")
         self.assertEqual(self.fake.requests, [])
 
-    def test_a_source_that_is_already_a_spreadsheet_is_refused_and_not_cloned(self):
-        self.fake.add_document(8, name="sheet", handler="spreadsheet", mimetype=XLSX_MIME)
-        self.fake.add_document(9, name="odd", handler="spreadsheet", mimetype="application/o-spreadsheet")
+    def test_a_source_that_is_already_a_spreadsheet_is_read_as_it_is_not_cloned_and_not_deleted(self):
+        # 0.1.1: this used to be refused ("not an uploaded xlsx"); an Odoo that opens an uploaded xlsx as a spreadsheet
+        # leaves no xlsx to clone, so the document itself is read. See SpreadsheetDocumentRouteTests for the details.
+        snapshot = fx.as_bytes(fx.make_snapshot())
+        self.fake.add_document(8, name="sheet", handler="spreadsheet", mimetype=XLSX_MIME, snapshot=snapshot)
+        self.fake.add_document(9, name="odd", handler="spreadsheet", mimetype="application/o-spreadsheet",
+                               snapshot=snapshot)
         for doc_id in (8, 9):
             with self.subTest(doc_id=doc_id):
-                self.assertFailed(self.run_intake("--xlsx-document", str(doc_id)), 2, "not an uploaded xlsx")
+                code, out, err = self.run_intake("--xlsx-document", str(doc_id))
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["route"], "snapshot")
         self.assertNoCloneOrUnlink()
+        self.assertIn(8, self.fake.documents)
+        self.assertIn(9, self.fake.documents)
 
     def test_a_source_with_another_mimetype_is_refused_and_not_cloned(self):
         for mimetype in ("application/pdf", False, "text/csv"):
@@ -1664,6 +1672,211 @@ class Utf8StreamTests(IntakeCase):
         code = intake_xlsx.main(["--file", self.write_input()], out, err)
         self.assertEqual(code, 1)
         self.assertEqual(err.getvalue().strip(), "error: unexpected ValueError")
+
+
+# ---------------------------------------------------------------- 0.1.1: --xlsx-document of a document that is ALREADY a spreadsheet
+
+class SpreadsheetDocumentRouteTests(IntakeCase):
+    """An Odoo that opens an uploaded xlsx as a spreadsheet when it is clicked leaves no xlsx to clone: the document is
+    read as it is. That path never clones and never deletes: the document is the user's own."""
+    DOC = 8
+
+    def stage_sheet(self, doc_id=DOC, mimetype=XLSX_MIME, snapshot=True, ready_after_polls=None, handler="spreadsheet"):
+        self.fake.add_document(doc_id, name="book", handler=handler, mimetype=mimetype,
+                               snapshot=fx.as_bytes(fx.make_snapshot()) if snapshot else None,
+                               ready_after_polls=ready_after_polls)
+
+    def sheet_args(self, *more, doc_id=DOC):
+        return self.xlsx_args(*more, xlsx_id=doc_id)
+
+    def assertUntouched(self, *doc_ids):
+        """No clone, no delete, no write of any kind reached the server, and every document is still there."""
+        self.assertEqual((self.clone_calls(), self.unlink_calls(), self.fake.cloned, self.fake.unlinked), ([], [], [], []))
+        self.assertEqual(self.fake.write_requests(), [])
+        self.assertEqual({method for method, _ in self.document_calls()} - {"read"}, set())
+        for doc_id in doc_ids:
+            self.assertIn(doc_id, self.fake.documents)
+
+    # ---- success
+
+    def test_a_spreadsheet_that_already_has_a_snapshot_is_returned_at_once_with_nothing_cloned_or_deleted(self):
+        self.stage_sheet()
+        code, out, err = self.run_intake(*self.sheet_args(*self.crop_args()))
+        self.assertEqual(code, 0, err)
+        written = self.read_out()
+        self.assertEqual(written, self.expected_baseline_bytes())
+        report = json.loads(out)
+        self.assertEqual((report["route"], report["sha256"]), ("snapshot", hashlib.sha256(written).hexdigest()))
+        self.assertEqual(self.document_calls(), [("read", [[self.DOC], ["name", "handler", "mimetype"]]),
+                                                 ("read", [[self.DOC], POLL_FIELDS])])
+        self.assertEqual(self.time.sleeps, [])                       # the snapshot was there: no waiting
+        self.assertEqual(len(self.fake.calls("common", "login")), 1)
+        self.assertUntouched(self.DOC)
+
+    def test_the_inventory_of_a_spreadsheet_document_is_the_same_as_the_one_of_its_snapshot_route(self):
+        self.stage_sheet()
+        code, out, err = self.run_intake(*self.sheet_args())
+        self.assertEqual(code, 0, err)
+        self.assertEqual([s["name"] for s in json.loads(out)["sheets"]], [fx.SHEET, fx.OTHER_SHEET])
+        self.assertUntouched(self.DOC)
+
+    def test_a_spreadsheet_without_a_snapshot_is_polled_until_the_user_takes_it(self):
+        self.stage_sheet(ready_after_polls=2)
+        code, out, err = self.run_intake(*self.sheet_args(*self.crop_args()))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.time.sleeps, [2.0, 2.0])
+        self.assertEqual(len(self.polls_of(self.DOC)), 3)
+        self.assertEqual(self.fresh_reads_of(self.DOC), [])          # no freshness check: it is not a clone
+        self.assertEqual(self.read_out(), self.expected_baseline_bytes())
+        self.assertUntouched(self.DOC)
+
+    def test_a_transient_server_error_while_waiting_is_retried_like_for_a_clone(self):
+        self.stage_sheet(ready_after_polls=1)
+        self.fake.read_error_on_polls = {0}                  # poll 0 fails, poll 1 answers the snapshot
+        code, _, err = self.run_intake(*self.sheet_args(*self.crop_args()))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.time.sleeps, [2.0])
+        self.assertEqual(len(self.polls_of(self.DOC)), 2)
+        self.assertUntouched(self.DOC)
+
+    # ---- the wait ends without a snapshot
+
+    def test_no_snapshot_in_time_is_exit_2_with_the_file_snapshot_hint_and_the_document_is_left_alone(self):
+        self.stage_sheet(snapshot=False)
+        result = self.run_intake(*self.sheet_args(*self.crop_args()))
+        self.assertFailed(result, 2, "no snapshot after 10 seconds")
+        self.assertIn("File > Snapshot", result[2])
+        self.assertEqual(self.time.sleeps, [2.0] * 5)
+        self.assertEqual(len(self.polls_of(self.DOC)), 6)
+        self.assertFalse(os.path.exists(self.out_path))
+        self.assertUntouched(self.DOC)
+
+    # ---- never cloned and never deleted, on EVERY way out
+
+    def test_the_document_is_never_cloned_or_deleted_whatever_way_the_run_ends(self):
+        def interrupted(_seconds):
+            raise KeyboardInterrupt
+
+        open(self.out_path, "wb").close()
+        wrong_sheet = ["--sheet", "No such sheet", "--area", fx.AREA, "--out", self.out_path + ".other"]
+        scenarios = [   # (name, setup(doc_id), extra argv, run kwargs, expected exit code)
+            ("success", lambda d: self.stage_sheet(d), self.crop_args("--force"), {}, 0),
+            ("timeout", lambda d: self.stage_sheet(d, snapshot=False), [], {}, 2),
+            ("server error after the poll budget",
+             lambda d: (self.stage_sheet(d), setattr(self.fake, "read_error_on_polls", set(range(30)))), [], {}, 1),
+            ("interrupt during the wait", lambda d: self.stage_sheet(d, ready_after_polls=5), [],
+             {"sleep": interrupted}, 130),
+            ("crop failure after the snapshot", lambda d: self.stage_sheet(d), wrong_sheet, {}, 2),
+            ("refused overwrite after the snapshot", lambda d: self.stage_sheet(d), self.crop_args(), {}, 2),
+        ]
+        doc_ids = []
+        for keep in (False, True):
+            for index, (name, setup, extra, kwargs, expected) in enumerate(scenarios):
+                doc_id = 30 + index + (10 if keep else 0)
+                doc_ids.append(doc_id)
+                with self.subTest(scenario=name, keep=keep):
+                    self.fake.read_error_on_polls = set()
+                    setup(doc_id)
+                    code, out, err = self.run_intake(*self.sheet_args(*(["--keep"] if keep else []), *extra,
+                                                                      doc_id=doc_id), **kwargs)
+                    self.assertEqual(code, expected, err)
+                    self.assertNotIn("kept the clone", err)           # --keep has nothing to keep here
+                    self.assertNotIn("deleting the clone", err)
+                    self.assertNotIn("note: if the server did create a clone", err)
+        self.assertUntouched(*doc_ids)
+
+    # ---- what the user is told
+
+    def test_the_address_to_open_carries_the_document_id_and_debug_1_and_goes_to_stderr_only(self):
+        self.stage_sheet(ready_after_polls=1)
+        code, out, err = self.run_intake(*self.sheet_args(*self.crop_args()))
+        self.assertEqual(code, 0, err)
+        address = [line for line in err.splitlines() if "/web?" in line]
+        self.assertEqual(address, [self.fake.url + URL_SUFFIX % self.DOC])
+        self.assertIn("debug=1", address[0])
+        self.assertTrue(address[0].endswith("spreadsheet_id=%d" % self.DOC))
+        for secret in (FAKE_KEY, "qa.user", "api_key"):
+            self.assertNotIn(secret, address[0])
+        self.assertNotIn("/web?", out)
+        self.assertEqual(json.loads(out)["route"], "snapshot")
+
+    def test_the_address_has_no_double_slash_when_the_config_url_ends_with_a_slash(self):
+        self.stage_sheet()
+        self.use_url(self.fake.url + "/")
+        _, _, err = self.run_intake(*self.sheet_args())
+        self.assertIn(self.fake.url + URL_SUFFIX % self.DOC, err.splitlines())
+
+    def test_the_log_says_that_nothing_is_cloned_and_nothing_is_deleted_and_asks_for_file_snapshot(self):
+        self.stage_sheet()
+        _, _, err = self.run_intake(*self.sheet_args())
+        self.assertIn("document %d is already a spreadsheet: nothing is cloned and nothing will be deleted." % self.DOC,
+                      err.splitlines())
+        self.assertIn("File > Snapshot", err)
+        for text in ("deleting the clone", "deleted the clone", "kept the clone", "WARNING", "note: if the server"):
+            self.assertNotIn(text, err)
+
+    # ---- which document counts as a spreadsheet
+
+    def test_the_handler_decides_before_the_mimetype_a_spreadsheet_of_any_mimetype_is_read(self):
+        for index, mimetype in enumerate((False, "application/pdf", "text/csv", XLSX_MIME, "application/o-spreadsheet")):
+            doc_id = 50 + index
+            self.stage_sheet(doc_id, mimetype=mimetype)
+            with self.subTest(mimetype=mimetype):
+                code, out, err = self.run_intake(*self.sheet_args(doc_id=doc_id))
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["route"], "snapshot")
+        self.assertUntouched()
+
+    def test_a_document_that_is_neither_a_spreadsheet_nor_an_xlsx_keeps_the_old_refusal(self):
+        for index, handler in enumerate((False, None, "other", "Spreadsheet", " spreadsheet", "spreadsheet ")):
+            doc_id = 60 + index
+            self.fake.add_document(doc_id, name="x", handler=handler, mimetype="application/pdf",
+                                   snapshot=fx.as_bytes(fx.make_snapshot()))
+            with self.subTest(handler=handler):
+                self.assertFailed(self.run_intake(*self.sheet_args(doc_id=doc_id)), 2, "document %d is not an uploaded "
+                                  "xlsx file" % doc_id)
+        self.assertUntouched()
+
+    def test_a_missing_document_keeps_the_old_refusal(self):
+        self.assertFailed(self.run_intake(*self.sheet_args(doc_id=123456)), 2, "document 123456 was not found")
+        self.assertUntouched()
+
+    def test_an_uploaded_xlsx_is_still_cloned_and_the_clone_deleted(self):
+        for index, handler in enumerate((False, None, "other")):
+            xlsx_id = 70 + index
+            self.fake.add_document(xlsx_id, name="book.xlsx", handler=handler, mimetype=XLSX_MIME)
+            self.fake.clone_snapshot = fx.as_bytes(fx.make_snapshot())
+            before = len(self.document_calls())
+            with self.subTest(handler=handler):
+                code, out, err = self.run_intake(*self.sheet_args(doc_id=xlsx_id))
+                self.assertEqual(code, 0, err)
+                clone = self.fake.cloned[-1][1]
+                self.assertEqual(self.fake.cloned[-1][0], xlsx_id)
+                self.assertEqual([method for method, _ in self.document_calls()[before:]],
+                                 ["read", "clone_xlsx_into_spreadsheet", "read", "read", "unlink"])
+                self.assertEqual(self.fake.unlinked[-1], [clone])
+                self.assertNotIn("nothing is cloned", err)
+                self.assertIn("deleted the clone (spreadsheet document %d)" % clone, err)
+                self.assertIn(xlsx_id, self.fake.documents)
+
+    # ---- --document-id is unchanged
+
+    def test_document_id_still_fails_fast_where_xlsx_document_waits(self):
+        self.stage_sheet(snapshot=False)
+        result = self.run_intake("--document-id", str(self.DOC), "--wait-seconds", "10", "--poll-interval", "2")
+        self.assertFailed(result, 2, "document %d has no snapshot yet" % self.DOC)
+        self.assertEqual(self.time.sleeps, [])
+        self.assertEqual(len(self.reads_of(self.DOC)), 1)
+        self.run_intake(*self.sheet_args())                          # the same document through --xlsx-document
+        self.assertEqual(self.time.sleeps, [2.0] * 5)
+        self.assertUntouched(self.DOC)
+
+    # ---- the help text
+
+    def test_the_help_of_xlsx_document_says_that_a_spreadsheet_is_read_as_it_is(self):
+        text = " ".join(intake_xlsx.build_parser().format_help().split())
+        self.assertIn("--xlsx-document", text)
+        self.assertIn("already a spreadsheet is read as it is, never cloned or deleted", text)
 
 
 if __name__ == "__main__":

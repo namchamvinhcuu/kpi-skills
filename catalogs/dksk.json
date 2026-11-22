@@ -559,14 +559,16 @@
       "생산 수량",
       "Production quantity",
       "Produced quantity",
-      "Produced"
+      "Produced",
+      "Số lượng sản xuất"
      ],
      "shipped": [
       "출하 수량",
       "Shipment quantity",
       "Shipped quantity",
       "Finished goods shipment quantity",
-      "Shipped"
+      "Shipped",
+      "Số lượng xuất hàng"
      ]
     }
    },

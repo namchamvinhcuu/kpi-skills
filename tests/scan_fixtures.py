@@ -100,12 +100,13 @@ def block(grid, title_row, title, year_text, forms="ko_year", labels=LABELS, hea
     return rows
 
 
-def twin(shipped_year="26년", produced_year="25년", forms="ko_year"):
+def twin(shipped_year="26년", produced_year="25년", forms="ko_year", shipped_title=SHIPPED_TITLE,
+         produced_title=PRODUCED_TITLE):
     """The synthetic twin of the design sheet: a `출하 수량` block (rows 4-10, header row 3, year cell A4:A10) and a
     `생산 수량` block (rows 23-29, header row 22, year cell A23:A29), 14 label rows, months 1-10 typed (M:N blank)."""
     grid = Grid(31, 15)
-    block(grid, 2, SHIPPED_TITLE, shipped_year, forms)
-    block(grid, 21, PRODUCED_TITLE, produced_year, forms)
+    block(grid, 2, shipped_title, shipped_year, forms)
+    block(grid, 21, produced_title, produced_year, forms)
     for row in range(3, 31):                           # the 13th column: a total formula, never a typed number
         if row not in (3, 22) and (row in range(4, 11) or row in range(23, 30)):
             grid.put(row, 15, "=SUM(C%d:N%d)" % (row, row))

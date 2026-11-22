@@ -759,9 +759,14 @@ class FakeOdoo:
         return base64.b64encode(snapshot).decode("ascii") if isinstance(snapshot, bytes) else snapshot
 
     def add_document(self, doc_id, name="doc", handler="spreadsheet", mimetype="application/o-spreadsheet",
-                     snapshot=None):
+                     snapshot=None, ready_after_polls=None):
+        """`ready_after_polls=N`: the snapshot reads answer no snapshot N times, then the snapshot (like the clone's
+        `snapshot_after_polls`, for a document that was not made by the clone call). The first `read` of such a document
+        is not counted as a poll (see the class docstring: it is the freshness read of a clone)."""
         self.documents[doc_id] = {"name": name, "handler": handler, "mimetype": mimetype,
                                   "spreadsheet_snapshot": self._packed(snapshot)}
+        if ready_after_polls is not None:
+            self._ready_after[doc_id] = ready_after_polls
 
     def documents_call(self, method, call_args):
         """The answer (or a `DocumentsError`) of one `documents.document` method."""

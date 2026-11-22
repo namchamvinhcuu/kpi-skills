@@ -41,6 +41,9 @@ ENGLISH_MONTH = re.compile(r"(%s)[a-z]*(\d{2,4})?" % "|".join(MONTH_ABBREVIATION
 YEAR_LABEL = re.compile(r"(\d{2,4})년")
 DEFAULT_NAME = "KPI draft"
 MAX_BLANK_ROWS = 2
+TITLE_LIMIT = 300
+# one bracketed part of a title: `( )`, full-width `（ ）`, `[ ]`, `【 】`; the text inside holds no bracket, so it never nests
+TITLE_BRACKETS = re.compile(r"[(（\[【]([^()（）\[\]【】]*)[)）\]】]")
 
 
 class ScanError(Exception):
@@ -191,12 +194,35 @@ def merged_catalog(catalog, overlay):
     return catalog
 
 
+def title_texts(title, known):
+    """The normalised texts a block title may be compared as. Always the whole title. When the title is made of several
+    parts (its lines, the text outside the brackets, every bracketed part: `출하 수량 (Số lượng xuất hàng)`) the parts
+    count too, but ONLY when EVERY part is a text in `known` (the alias texts of the selector): a title that adds
+    anything else (`생산 수량 (계획)` = plan, `출하 수량 (EA)`) decides nothing: a qualifier never makes the title name
+    a `kind`. Such a block falls back to the source chosen from the row labels alone and the scan prints its "block
+    title ... was not used" warning, which the user must read before confirming the table. The whole title is always normalised in full (never
+    cut: a qualifier after hundreds of blanks must still count); only a title of at most TITLE_LIMIT characters is
+    split into parts, and the bracket pattern cannot nest, so the work stays linear on any text."""
+    if not title:
+        return []
+    texts = [bind_kpi.normalize_alias(title)]
+    if len(title) > TITLE_LIMIT:
+        return texts
+    parts = []
+    for line in re.split(r"[\r\n]+", title):
+        parts += [TITLE_BRACKETS.sub(" ", line)] + TITLE_BRACKETS.findall(line)
+    parts = [norm for norm in (bind_kpi.normalize_alias(part) for part in parts) if norm]
+    if parts and all(part in known for part in parts):
+        texts += parts
+    return texts
+
+
 def resolve(lines, title, catalog):
     """(source name, where) or (None, reason) for a row with the label `lines` under the block `title`. The label
     resolves every selector; the block title resolves ONLY the selector `kind` (a title that names a group must not
-    turn an unrelated label into a match)."""
+    turn an unrelated label into a match). A title is compared as a whole and by its lines and bracketed parts
+    (`title_texts`); two values of `kind` found in one title still refuse the row."""
     label_texts = [bind_kpi.normalize_alias(text) for text in lines]
-    title_texts = [bind_kpi.normalize_alias(title)] if title else []
     candidates = []
     for name, source in sorted(catalog["sources"].items()):
         aliases = source.get("aliases")
@@ -205,7 +231,10 @@ def resolve(lines, title, catalog):
             continue
         where, complete = {}, True
         for selector in sorted(source["selectors"]):
-            texts = label_texts + (title_texts if selector == "kind" else [])
+            texts = label_texts
+            if selector == "kind":
+                known = {bind_kpi.normalize_alias(item) for items in aliases.get("kind", {}).values() for item in items}
+                texts = label_texts + title_texts(title, known)
             matched = {value for value, items in aliases.get(selector, {}).items()
                        if any(bind_kpi.normalize_alias(item) in texts for item in items)}
             if len(matched) > 1:

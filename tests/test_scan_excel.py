@@ -12,6 +12,7 @@ import io
 import json
 import os
 import socket
+import time
 import unittest
 from unittest import mock
 
@@ -994,6 +995,251 @@ class TitleWarningTests(ScanCase):
         self.assertEqual(len(warnings), 2)
         self.assertTrue(any("was not used" in line for line in warnings))
         self.assertTrue(any("year label says 2025" in line for line in warnings))
+
+
+# ---------------------------------------------------------------- 0.1.1: a block title is read by its parts
+
+VI_SHIPPED, VI_PRODUCED = "Số lượng xuất hàng", "Số lượng sản xuất"        # the two alias texts added to the catalog
+
+
+class TitlePartsTests(ScanCase):
+    """`title_texts`: the whole title always counts; its lines, its text outside the brackets and each bracketed part
+    count ONLY when EVERY part is an alias text of `kind`. A qualifier (plan, unit, target, previous year) therefore
+    keeps the title from deciding anything, and the title still resolves `kind` and nothing else."""
+    SHIPPED_TITLES = [
+        "출하 수량 (%s)" % VI_SHIPPED,                  # the bilingual title of the customer's sheet
+        "출하 수량（%s）" % VI_SHIPPED,                  # full-width round brackets
+        "출하 수량 [%s]" % VI_SHIPPED,
+        "출하 수량 【%s】" % VI_SHIPPED,
+        "%s (출하 수량)" % VI_SHIPPED,                  # the other way round
+        VI_SHIPPED,                                     # the new alias on its own
+        "출하 수량\n%s" % VI_SHIPPED,                   # two lines
+        "출하 수량\r\n%s" % VI_SHIPPED,
+        "출하 수량\n(%s)" % VI_SHIPPED,
+        "출하 수량 (%s) [Shipped]" % VI_SHIPPED,        # two brackets on one line: neither swallows the other
+        "출하 수량 (%s) (Shipped)" % VI_SHIPPED,
+        "Shipped (Shipment quantity)",                  # two English aliases of the same kind
+        "출하 수량 (출하 수량)",
+        "(출하 수량)",
+        "출하수량(Sốlượngxuấthàng)",                    # spacing is normalised away
+        sf.nfd("출하 수량 (%s)" % VI_SHIPPED),          # decomposed Hangul and Vietnamese letters
+        "출하 수량 (%s)" % VI_SHIPPED.upper(),
+    ]
+    PRODUCED_TITLES = [
+        "생산 수량 (%s)" % VI_PRODUCED,
+        "생산 수량（%s）" % VI_PRODUCED,
+        "생산 수량 [%s]" % VI_PRODUCED,
+        "생산 수량 【%s】" % VI_PRODUCED,
+        VI_PRODUCED,
+        "생산 수량\n%s" % VI_PRODUCED,
+        "생산 수량\r\n%s" % VI_PRODUCED,
+        "Produced (Production quantity)",
+    ]
+    QUALIFIED_TITLES = [                                # the title decides NOTHING: a plan / unit / target is not the actual
+        "생산 수량 (계획)", "출하 수량 (EA)", "출하 수량 (목표)", "출하 수량 (전년)", "생산 수량 (전년)",
+        "출하 수량 (%s) (계획)" % VI_SHIPPED,           # one known part and one qualifier
+        "출하 수량 (%s)\n계획" % VI_SHIPPED,
+        "출하 수량 - 계획", "출하 수량 계획", "출하 수량 (계획 )", "계획 (출하 수량)",
+        "출하 수량 (%s, EA)" % VI_SHIPPED, "출하 수량 (%s EA)" % VI_SHIPPED,
+        "출하 수량 [계획] (%s)" % VI_SHIPPED,
+        "Shipped (plan)", "Produced (target)", "%s (kế hoạch)" % VI_PRODUCED,
+        "출하 수량 (%s" % VI_SHIPPED,                   # unbalanced: the bracket is open, so it is text, not a part
+        "출하 수량 %s)" % VI_SHIPPED,
+        "(출하 수량", "출하 수량)",
+        "출하 수량 ((계획))", "((출하 수량))", "(출하 수량 (Shipped))",    # nested: never a part
+    ]
+
+    def setUp(self):
+        super().setUp()
+        self.catalog = bind_kpi.load_catalog(project="dksk")
+
+    def resolved(self, title, label="DK 냉장고"):
+        return scan_excel.resolve([label], title, self.catalog)
+
+    def assertKind(self, title, kind, label="DK 냉장고"):
+        found, reason = self.resolved(title, label)
+        shown = "%r (%d chars)" % (title[:20], len(title))           # a title can be long: never print it whole
+        self.assertEqual((found, reason), (("report_group", {"group_code": "DK_REF", "kind": kind}), ""), shown)
+
+    def assertDecidesNothing(self, title):
+        found, reason = self.resolved(title)
+        shown = "%r (%d chars)" % (title[:20], len(title))
+        self.assertEqual((found, reason), (("production_group", {"group_code": "DK_REF"}), ""), shown)
+
+    def test_a_title_made_only_of_known_kind_texts_resolves_that_kind(self):
+        for title in self.SHIPPED_TITLES:
+            with self.subTest(title=title):
+                self.assertKind(title, "shipped")
+        for title in self.PRODUCED_TITLES:
+            with self.subTest(title=title):
+                self.assertKind(title, "produced")
+
+    def test_a_qualified_unbalanced_or_nested_title_resolves_nothing_the_source_comes_from_the_label_alone(self):
+        for title in self.QUALIFIED_TITLES:
+            with self.subTest(title=title):
+                self.assertDecidesNothing(title)
+
+    def test_through_the_command_line_a_resolved_title_binds_without_a_warning_and_a_qualified_one_warns_once(self):
+        for title in self.SHIPPED_TITLES[:5] + self.PRODUCED_TITLES[:5]:
+            with self.subTest(title=title, kind="resolved"):
+                rc, out, err = self.scan(simple_grid(["DK 냉장고", "SK 세탁기"], title=title), "--force")
+                self.assertEqual((rc, err), (0, ""))
+                self.assertEqual({b["source"] for b in self.draft()["bindings"]}, {"report_group"})
+                self.assertEqual([line for line in out.splitlines() if "was not used" in line], [])
+        for title in self.QUALIFIED_TITLES:
+            with self.subTest(title=title, kind="qualified"):
+                rc, out, err = self.scan(simple_grid(["DK 냉장고", "SK 세탁기"], title=title), "--force")
+                self.assertEqual((rc, err), (0, ""))
+                self.assertEqual({b["source"] for b in self.draft()["bindings"]}, {"production_group"})
+                warnings = [line for line in out.splitlines() if "was not used" in line]
+                self.assertEqual(len(warnings), 1, out)
+                self.assertTrue(warnings[0].startswith("WARNING row 3: the block title "), warnings[0])
+
+    def test_two_kinds_in_one_title_refuse_the_row(self):
+        for title in ("출하 수량 (생산 수량)", "생산 수량\n출하 수량", "Shipped (Produced)", "출하 수량 (%s)" % VI_PRODUCED,
+                      "%s (%s)" % (VI_SHIPPED, VI_PRODUCED), "생산 수량 (Shipped)", "출하 수량 [생산 수량]"):
+            with self.subTest(title=title):
+                found, reason = self.resolved(title)
+                self.assertEqual((found, reason), (None, "its label matches two values of report_group.kind"))
+                rc, out, err = self.scan(simple_grid(["DK 냉장고"], title=title), "--force")
+                self.assertEqual((rc, err), (0, ""))
+                self.assertEqual(self.bound(out), {})
+                self.assertIn("matches two values of report_group.kind", out)
+                self.assertIn("no row could be proposed", out)
+
+    def test_a_part_that_is_the_alias_of_another_selector_is_not_a_kind_text_and_decides_nothing(self):
+        for title in ("출하 수량 (DK 냉장고)", "DK 냉장고 (출하 수량)", "DK 냉장고\n출하 수량", "출하 수량 (SK 세탁기)"):
+            with self.subTest(title=title):
+                found, _ = self.resolved(title, label="SK 세탁기")
+                self.assertEqual(found, ("production_group", {"group_code": "SK_WM"}))     # the label gives the group
+
+    def test_the_title_never_resolves_the_group_code(self):
+        for title in ("DK 냉장고", "DK 냉장고 (출하 수량)", "출하 수량 (DK 냉장고)", "DK 냉장고\n출하 수량",
+                      "DK 냉장고 (%s)" % VI_SHIPPED, "[DK 냉장고] 출하 수량", "SK 세탁기"):
+            with self.subTest(title=title):
+                found, reason = self.resolved(title, label="Total pcs")
+                self.assertEqual((found, reason), (None, "no catalog source has an alias for it"))
+                self.assertEqual(self.resolved(title, label="DK 에어컨")[0][1].get("group_code"), "DK_AC")
+        out = self.where(["Total pcs"], title="DK 냉장고 (출하 수량)")
+        self.assertEqual(self.bound(out), {})
+        self.assertIn("no catalog source has an alias for it", out)
+
+    def test_a_long_or_unbalanced_title_stays_fast_and_decides_nothing(self):
+        for title in ("(" * 5000, ")" * 5000, "(" * 2500 + ")" * 2500, "[(" * 2500, "출하 수량 " + "(" * 5000,
+                      "(" * 5000 + " 출하 수량", "(a)" * 1700, "[a(" * 1700, "출하 수량 " + "(계획" * 1000, "\n" * 5000,
+                      "a\n" * 2500):
+            with self.subTest(title=title[:12], length=len(title)):
+                started = time.perf_counter()
+                found, reason = self.resolved(title)
+                self.assertLess(time.perf_counter() - started, 2.0)
+                self.assertEqual((found, reason), (("production_group", {"group_code": "DK_REF"}), ""))
+
+    def test_the_work_on_a_long_title_is_bounded_by_the_title_limit_not_by_its_length(self):
+        self.assertEqual(scan_excel.TITLE_LIMIT, 300)
+        calls = []
+        original = bind_kpi.normalize_alias
+        with mock.patch.object(bind_kpi, "normalize_alias", side_effect=lambda text: calls.append(text) or original(text)):
+            texts = scan_excel.title_texts("(a)" * 5000, {"a"})
+        self.assertLessEqual(len(calls), 2 * scan_excel.TITLE_LIMIT)       # parts of the first 300 characters only
+        self.assertLessEqual(len(texts), 2 * scan_excel.TITLE_LIMIT)
+
+    def test_a_qualifier_after_the_title_limit_still_makes_the_title_decide_nothing_regression(self):
+        # Regression guard (code bug found while testing 0.1.1): the whole title is normalised from the first 300
+        # characters only and every whitespace is removed, so `출하 수량` + 300 spaces + `(계획)` was read as plain
+        # `출하 수량` = actual shipped quantity, with the plan qualifier cut away unseen.
+        for title in ("출하 수량" + " " * 300 + "(계획)", "출하 수량" + "\n" * 300 + "계획", "생산 수량" + " " * 295 + "(EA)",
+                      "출하 수량 (%s)" % VI_SHIPPED + " " * 400 + "(전년)"):
+            with self.subTest(title=title[:12], length=len(title)):
+                self.assertDecidesNothing(title)
+
+    def test_a_qualifier_just_inside_the_title_limit_is_seen(self):
+        for pad in (0, 100, scan_excel.TITLE_LIMIT - len("출하 수량") - len("(계획)")):
+            with self.subTest(pad=pad):
+                title = "출하 수량" + " " * pad + "(계획)"
+                self.assertLessEqual(len(title), scan_excel.TITLE_LIMIT)
+                self.assertDecidesNothing(title)
+
+    def test_title_texts_always_holds_the_whole_title_first_and_the_parts_only_when_all_are_known(self):
+        known = {bind_kpi.normalize_alias(text) for text in ("출하 수량", VI_SHIPPED)}
+        whole = bind_kpi.normalize_alias("출하 수량 (%s)" % VI_SHIPPED)
+        self.assertEqual(scan_excel.title_texts("출하 수량 (%s)" % VI_SHIPPED, known),
+                         [whole, bind_kpi.normalize_alias("출하 수량"), bind_kpi.normalize_alias(VI_SHIPPED)])
+        self.assertEqual(scan_excel.title_texts("출하 수량 (계획)", known), [bind_kpi.normalize_alias("출하 수량 (계획)")])
+        self.assertEqual(scan_excel.title_texts("출하 수량", known), [bind_kpi.normalize_alias("출하 수량")] * 2)
+        self.assertEqual(scan_excel.title_texts("", known), [])
+        self.assertEqual(scan_excel.title_texts(None, known), [])
+        self.assertEqual(scan_excel.title_texts("출하 수량 (계획)", set()), [bind_kpi.normalize_alias("출하 수량 (계획)")])
+
+    def test_the_whole_title_is_matched_even_when_no_part_is_known(self):
+        # an overlay alias that is itself written with a bracket must still match as a whole title
+        catalog = bind_kpi.load_catalog(project="dksk")
+        scan_excel.merged_catalog(catalog, {"report_group": {"kind": {"shipped": ["출하 수량 (EA)"]}}})
+        found, reason = scan_excel.resolve(["DK 냉장고"], "출하 수량 (EA)", catalog)
+        self.assertEqual((found, reason), (("report_group", {"group_code": "DK_REF", "kind": "shipped"}), ""))
+        found, _ = scan_excel.resolve(["DK 냉장고"], "출하 수량 (EA) ", catalog)
+        self.assertEqual(found[0], "report_group")
+        found, _ = scan_excel.resolve(["DK 냉장고"], "출하 수량 (계획)", catalog)
+        self.assertEqual(found[0], "production_group")
+
+    def test_a_known_text_of_the_selector_is_all_that_a_part_may_be_an_overlay_text_counts_too(self):
+        catalog = bind_kpi.load_catalog(project="dksk")
+        scan_excel.merged_catalog(catalog, {"report_group": {"kind": {"shipped": ["Hàng đi"]}}})
+        found, _ = scan_excel.resolve(["DK 냉장고"], "출하 수량 (Hàng đi)", catalog)
+        self.assertEqual(found, ("report_group", {"group_code": "DK_REF", "kind": "shipped"}))
+        found, _ = scan_excel.resolve(["DK 냉장고"], "출하 수량 (Hàng đi, EA)", catalog)
+        self.assertEqual(found[0], "production_group")
+
+    def test_the_production_block_and_the_shipment_block_of_the_customer_sheet_bind_report_group(self):
+        baseline = sf.twin(shipped_title="출하 수량 (%s)" % VI_SHIPPED, produced_title="생산 수량 (%s)" % VI_PRODUCED)
+        self.write(baseline)
+        rc, out, err = self.cli(["--baseline", self.baseline_path, "--out", self.out_path])
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(self.draft()["bindings"], sf.expected_twin_bindings())
+        self.assertIn("bind dry run: ok (168 cells would be bound)", out.splitlines())
+        self.assertEqual([line for line in out.splitlines() if "was not used" in line or "ask the user" in line], [])
+        self.assertIn('block title: "출하 수량 (%s)"' % VI_SHIPPED, out)
+        self.assertIn('block title: "생산 수량 (%s)"' % VI_PRODUCED, out)
+
+    def test_the_demo_like_layout_a_bilingual_title_and_seven_groups_maps_every_row(self):
+        for title, kind in (("출하 수량 (%s)" % VI_SHIPPED, "shipped"), ("생산 수량 (%s)" % VI_PRODUCED, "produced"),
+                            ("생산 수량\n%s" % VI_PRODUCED, "produced")):
+            with self.subTest(title=title):
+                rc, out, err = self.scan(simple_grid(sf.LABELS, title=title), "--force")
+                self.assertEqual((rc, err), (0, ""))
+                self.assertEqual(sorted(self.bound(out)), list(range(3, 10)))
+                self.assertEqual([(b["source"], b["where"]) for b in self.draft()["bindings"]],
+                                 [("report_group", {"group_code": code, "kind": kind}) for code in sf.CODES])
+                self.assertIn("bind dry run: ok (84 cells would be bound)", out.splitlines())
+                self.assertEqual([line for line in out.splitlines() if "ask the user" in line], [])
+
+    def test_the_two_new_alias_texts_are_in_the_catalog_under_the_right_kind_and_pass_check_aliases(self):
+        source = self.catalog["sources"]["report_group"]
+        kind = source["aliases"]["kind"]
+        self.assertIn(VI_PRODUCED, kind["produced"])
+        self.assertIn(VI_SHIPPED, kind["shipped"])
+        self.assertNotIn(VI_PRODUCED, kind["shipped"])
+        self.assertNotIn(VI_SHIPPED, kind["produced"])
+        bind_kpi.check_aliases("report_group", source, source["aliases"])               # raises when refused
+        for text in (VI_PRODUCED, VI_SHIPPED):
+            self.assertEqual(bind_kpi.normalize_alias(text), bind_kpi.normalize_alias(sf.nfd(text)))
+        # the old texts stay
+        self.assertTrue({"생산 수량", "Production quantity", "Produced quantity", "Produced"} <= set(kind["produced"]))
+        self.assertTrue({"출하 수량", "Shipment quantity", "Shipped quantity", "Finished goods shipment quantity",
+                         "Shipped"} <= set(kind["shipped"]))
+
+    def test_an_overlay_that_puts_a_new_alias_text_under_the_other_kind_is_refused(self):
+        for text, other in ((VI_SHIPPED, "produced"), (VI_PRODUCED, "shipped"), (VI_SHIPPED.upper(), "produced")):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(scan_excel.ScanError, "belongs to two values"):
+                    scan_excel.merged_catalog(bind_kpi.load_catalog(project="dksk"),
+                                              {"report_group": {"kind": {other: [text]}}})
+
+    def test_a_title_that_is_one_unknown_text_resolves_nothing_and_a_row_label_is_never_split_by_brackets(self):
+        # parts are a feature of the BLOCK TITLE only: a row label keeps matching as whole lines
+        found, _ = scan_excel.resolve(["DK 냉장고 (EA)"], None, self.catalog)
+        self.assertIsNone(found)
+        found, _ = scan_excel.resolve(["DK 냉장고 (%s)" % VI_SHIPPED], None, self.catalog)
+        self.assertIsNone(found)
 
 
 # ---------------------------------------------------------------- the aliases overlay

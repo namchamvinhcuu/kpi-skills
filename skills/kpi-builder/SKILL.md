@@ -79,7 +79,10 @@ to ask the owner of the instance to allow it.
 ### 1. Find the Excel
 
 Ask the user which file: the easiest is to open it in Odoo Documents and paste the address bar, the number after
-`id=` is the document id (`<N>` below). The file must be an uploaded `.xlsx` (not already a spreadsheet).
+`id=` (or `spreadsheet_id=`: some Odoo installations open an uploaded `.xlsx` as a spreadsheet when it is clicked) is the
+document id (`<N>` below). It is an uploaded `.xlsx` or a document that is already a spreadsheet: the same
+`--xlsx-document <N>` command handles both. Take only the digits after that `=` from a pasted address, and never the
+host name (the user types it, see step 0).
 
 The customer's Excel is the TEMPLATE: it carries the look and the cell addresses, so it is always required. A design
 document that comes with it (pptx, PDF, docx, notes: the designer's description of each block) is only a HINT about
@@ -134,10 +137,13 @@ The script creates a temporary spreadsheet copy, prints an address (it carries `
 printed) and WAITS up to ten minutes. Tell the user exactly: open that address, wait until the sheet is shown, then use
 the menu **File > Snapshot** (no edit is needed). The menu follows the user's Odoo language (Korean: `파일 > 스냅샷`):
 if the user does not find "Snapshot", ask what the File menu lists; it is the entry right after the version-history one. The script then reads the snapshot, writes the baseline and deletes
-its copy. Do not leave the user waiting in silence: run it in the background, read its first lines, and give the user
+its copy. When `<N>` is already a spreadsheet the script makes no copy and deletes nothing: it reads the snapshot the
+user already took, or waits for the File > Snapshot at the printed address (the same two instructions apply). An
+existing snapshot is read as it is: if the user changed the sheet after it, ask for a new File > Snapshot and run again. Do not
+leave the user waiting in silence: run it in the background, read its first lines, and give the user
 the address and these two instructions before you wait for it to finish. Report: the cells, merges and
 `dropped_content_cells` (content outside the area: if it is not zero, ask whether the area is right).
-Alternatives: `--document-id <id>` (a spreadsheet copy the user already snapshotted) and `--file <path>` (the file saved
+Alternatives: `--document-id <id>` (a spreadsheet that already holds a snapshot, it never waits) and `--file <path>` (the file saved
 with File > Download as JSON, debug mode). Errors of the intake are on purpose loud (a merge across the area edge, a
 formula that reads outside the area, charts or filters it cannot copy): explain them in plain words and ask for a
 bigger area or a simpler sheet; never cut data silently.

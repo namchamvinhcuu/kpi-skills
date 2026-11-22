@@ -410,13 +410,33 @@ def wait_for_snapshot(client, document_id, wait_seconds, poll_interval, sleep=ti
         sleep(poll_interval)
 
 
+def intake_from_spreadsheet_document(client, document_id, wait_seconds, poll_interval, log, sleep=time.sleep,
+                                     clock=time.monotonic):
+    """The document is ALREADY a spreadsheet (an Odoo that opens an uploaded xlsx as a spreadsheet when it is clicked
+    leaves no xlsx to clone): return its snapshot, waiting for the user's File > Snapshot when it has none yet.
+    Nothing is cloned and nothing is deleted: this document is the user's own."""
+    url = client.config.url.rstrip("/") + "/web?debug=1#action=action_open_spreadsheet&spreadsheet_id=%d" % document_id
+    log("document %d is already a spreadsheet: nothing is cloned and nothing will be deleted." % document_id)
+    log("If it holds no snapshot yet, open this address in the browser, then use the menu File > Snapshot "
+        "(no edit needed):")
+    log(url)
+    log("An existing snapshot is read as it is: if you changed the sheet after your last File > Snapshot, take a new "
+        "snapshot and run this command again.")
+    log("Reading the snapshot (waiting up to %d seconds when there is none yet) ..." % wait_seconds)
+    return wait_for_snapshot(client, document_id, wait_seconds, poll_interval, sleep=sleep, clock=clock)
+
+
 def intake_from_xlsx_document(client, xlsx_id, keep, wait_seconds, poll_interval, log, sleep=time.sleep,
                               clock=time.monotonic):
-    """Clone the uploaded xlsx, wait for the user's snapshot, return its bytes. The clone is deleted in `finally`."""
+    """Clone the uploaded xlsx, wait for the user's snapshot, return its bytes. The clone is deleted in `finally`.
+    A document that is already a spreadsheet is not cloned: see `intake_from_spreadsheet_document`."""
     rows = client.execute("documents.document", "read", [[xlsx_id], ["name", "handler", "mimetype"]])
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         raise IntakeError("document %s was not found" % xlsx_id)
-    if rows[0].get("handler") == "spreadsheet" or "spreadsheetml" not in str(rows[0].get("mimetype")):
+    if rows[0].get("handler") == "spreadsheet":
+        return intake_from_spreadsheet_document(client, xlsx_id, wait_seconds, poll_interval, log, sleep=sleep,
+                                                clock=clock)
+    if "spreadsheetml" not in str(rows[0].get("mimetype")):
         raise IntakeError("document %s is not an uploaded xlsx file" % xlsx_id)
     try:
         clone = clone_id_of(client.execute("documents.document", "clone_xlsx_into_spreadsheet", [[xlsx_id]]), xlsx_id)
@@ -454,7 +474,9 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="intake_xlsx.py", description=__doc__.split("\n\n")[0])
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--document-id", type=int, help="spreadsheet document that already holds a snapshot")
-    source.add_argument("--xlsx-document", type=int, help="uploaded xlsx document: clone, wait for File > Snapshot")
+    source.add_argument("--xlsx-document", type=int,
+                        help="uploaded xlsx document: clone, wait for File > Snapshot (a document that is already a "
+                             "spreadsheet is read as it is, never cloned or deleted)")
     source.add_argument("--file", help="file saved with File > Download as JSON")
     parser.add_argument("--sheet", help="name of the sheet (without it, only the sheet inventory is printed)")
     parser.add_argument("--area", help="A1:<last cell> of the design area, e.g. A1:Q31")

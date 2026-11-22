@@ -1073,6 +1073,39 @@ class ReadmeTests(DocCase):
         self.assertEqual(json.loads(read(REPO / ".claude-plugin" / "plugin.json"))["name"], "odoo-kpi-skills")
 
 
+# ---------------------------------------------------------------- 0.1.1: a document that is already a spreadsheet
+
+class SpreadsheetDocumentDocsTests(DocCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = read(SKILL)
+
+    def body(self, title_pattern):
+        found = section(self.text, title_pattern)
+        self.assertIsNotNone(found, "no step headed like %r" % title_pattern)
+        return found[1]
+
+    def test_step_1_accepts_an_uploaded_xlsx_or_a_document_that_is_already_a_spreadsheet(self):
+        body = self.body(r"^1\.\s+find the excel")
+        self.assertEqual(says(body, r"spreadsheet_id=", r"already a spreadsheet", r"uploaded \.xlsx",
+                              r"same --xlsx-document <n> command handles both",
+                              r"never the host name"), [])
+        self.assertNotIn("(not already a spreadsheet)", body)
+
+    def test_step_3_says_a_spreadsheet_document_is_neither_copied_nor_deleted_and_document_id_never_waits(self):
+        body = self.body(r"^3\.\s+intake")
+        self.assertEqual(says(body, r"already a spreadsheet the script makes no copy and deletes nothing",
+                              r"file > snapshot", r"--document-id <id> \(a spreadsheet that already holds a snapshot, "
+                              r"it never waits\)"), [])
+        self.assertEqual(says(body, r"deletes its copy"), [])                # the uploaded-xlsx path still deletes its copy
+
+    def test_the_version_is_the_same_in_the_manifest_the_client_and_the_readme(self):
+        version = json.loads(read(REPO / ".claude-plugin" / "plugin.json"))["version"]
+        self.assertEqual(odoo_rpc.VERSION, version)
+        self.assertEqual(odoo_rpc.USER_AGENT, "odoo-kpi-skills/" + version)
+        self.assertIn("Status: **%s," % version, read(README))
+
+
 # ---------------------------------------------------------------- manifest
 
 class ManifestTests(DocCase):

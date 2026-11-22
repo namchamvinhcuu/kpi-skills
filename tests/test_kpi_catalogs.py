@@ -32,7 +32,10 @@ import reconcile_kpi
 import scan_excel
 
 SHIPPED_DIR = os.path.join(str(REPO), "catalogs")
-DKSK_SHA256 = "3328714b2d9423518d5c835eef99ebd0952f780b822bf67abefb7cb428ff21cd"
+# Updated ON PURPOSE for 0.1.1: the move digest was 3328714b... (14566 bytes); the only change since is the two new `kind`
+# alias texts of report_group ("Số lượng sản xuất" under produced, "Số lượng xuất hàng" under shipped).
+DKSK_SHA256 = "2f63c92d2247895dd3718c5f0bd244421007602740f618f37ada6fa00a97cc72"
+DKSK_BYTES = 14638
 TYPED_TEXT = "zqxword"        # a text no message of the plugin may repeat: it stands for whatever the user typed
 
 
@@ -372,7 +375,7 @@ class RealFolderTests(unittest.TestCase):
         A legitimate edit of the DKSK catalog updates DKSK_SHA256 ON PURPOSE, in the same change."""
         with open(os.path.join(SHIPPED_DIR, "dksk.json"), "rb") as handle:
             data = handle.read()
-        self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (14566, DKSK_SHA256))
+        self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (DKSK_BYTES, DKSK_SHA256))
         self.assertFalse(os.path.exists(os.path.join(str(REPO), "scripts", "catalog.json")))
 
     def test_every_shipped_catalog_is_committed_not_ignored_by_git(self):
