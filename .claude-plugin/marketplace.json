@@ -1,0 +1,14 @@
+{
+  "name": "odoo-kpi",
+  "description": "Claude Code skills for building Odoo KPI dashboards.",
+  "owner": {
+    "name": "Autonsi"
+  },
+  "plugins": [
+    {
+      "name": "odoo-kpi-skills",
+      "source": "./",
+      "description": "Build Odoo KPI dashboards from an Excel file with Claude Code (existing data sources only)."
+    }
+  ]
+}

@@ -1,0 +1,637 @@
+{
+ "note": "Existing models only (SQL views of autonsi_kpi_dksk and one manual-input model). Names and caveats only: no customer data. A source that is not here needs a new view: write a requirement text for a developer and stop.",
+ "schema": 1,
+ "sources": {
+  "month_metric": {
+   "caveats": [
+    "Confirmed production sheets of every MMS process, by actual_date; working_days counts days with a confirmed sheet of the process with code 022 and quantity above 0.",
+    "regular_hours = sum of end_time - start_time (parallel workers add up); ng_qty and actual_qty cover ALL processes.",
+    "Not company-aware."
+   ],
+   "column_groups": {
+    "months": [
+     "month_1",
+     "month_2",
+     "month_3",
+     "month_4",
+     "month_5",
+     "month_6",
+     "month_7",
+     "month_8",
+     "month_9",
+     "month_10",
+     "month_11",
+     "month_12"
+    ]
+   },
+   "model": "dksk.kpi.month_metric",
+   "read_audience": "base.group_user",
+   "selectors": {
+    "metric": {
+     "values": [
+      "working_days",
+      "regular_hours",
+      "ng_qty",
+      "actual_qty"
+     ]
+    }
+   },
+   "title": "Production sheet figures per month: working days, hours, NG, actual quantity",
+   "unit": "mixed (days, hours, pcs by metric)",
+   "value_columns": [
+    "month_1",
+    "month_10",
+    "month_11",
+    "month_12",
+    "month_2",
+    "month_3",
+    "month_4",
+    "month_5",
+    "month_6",
+    "month_7",
+    "month_8",
+    "month_9"
+   ],
+   "year_chain": {
+    "current": "year"
+   }
+  },
+  "process_month": {
+   "caveats": [
+    "row_no is the position of the process row in the customer Excel (41 rows of the KPI 1 design); a row without a process code is all 0.",
+    "per_day = quantity / CALENDAR days of the month (the current month stays low until it ends); per_hour = quantity / hours of the same sheets.",
+    "Not company-aware."
+   ],
+   "column_groups": {
+    "months": [
+     "month_1",
+     "month_2",
+     "month_3",
+     "month_4",
+     "month_5",
+     "month_6",
+     "month_7",
+     "month_8",
+     "month_9",
+     "month_10",
+     "month_11",
+     "month_12"
+    ]
+   },
+   "model": "dksk.kpi.process_month",
+   "read_audience": "base.group_user",
+   "selectors": {
+    "metric": {
+     "values": [
+      "per_day",
+      "per_hour"
+     ]
+    },
+    "row_no": {
+     "max": 41,
+     "min": 1
+    }
+   },
+   "title": "Production quantity per day / per hour by process row, per month",
+   "unit": "pcs per day / pcs per hour",
+   "value_columns": [
+    "month_1",
+    "month_10",
+    "month_11",
+    "month_12",
+    "month_2",
+    "month_3",
+    "month_4",
+    "month_5",
+    "month_6",
+    "month_7",
+    "month_8",
+    "month_9"
+   ],
+   "year_chain": {
+    "current": "year",
+    "previous": "next_year"
+   }
+  },
+  "production_group": {
+   "aliases": {
+    "group_code": {
+     "DK_AC": [
+      "DK 에어컨",
+      "DK Air Conditioner",
+      "DK AC",
+      "DK_AC"
+     ],
+     "DK_ETC": [
+      "DK 기타",
+      "DK Other",
+      "DK ETC",
+      "DK_ETC"
+     ],
+     "DK_REF": [
+      "DK 냉장고",
+      "DK Refrigerator",
+      "DK REF",
+      "DK_REF"
+     ],
+     "SK_ETC": [
+      "SK 기타",
+      "SK Other",
+      "SK ETC",
+      "SK_ETC"
+     ],
+     "SK_WM": [
+      "SK 세탁기",
+      "SK Washing Machine",
+      "SK WM",
+      "SK_WM"
+     ],
+     "SZDK_REF": [
+      "SZDK 냉장고",
+      "SZDK Refrigerator",
+      "SZDK REF",
+      "SZDK_REF"
+     ]
+    }
+   },
+   "caveats": [
+    "Production = confirmed production sheets (mms.mo.operation) of the LAST in-house process of each MO, by actual_date; actual_qty already includes NG.",
+    "Only the six fixed groups (buyer alias + product category marker); a product of any other buyer or category is not counted.",
+    "Not company-aware: all companies are summed."
+   ],
+   "column_groups": {
+    "months": [
+     "month_1",
+     "month_2",
+     "month_3",
+     "month_4",
+     "month_5",
+     "month_6",
+     "month_7",
+     "month_8",
+     "month_9",
+     "month_10",
+     "month_11",
+     "month_12"
+    ]
+   },
+   "model": "dksk.kpi.production_group",
+   "read_audience": "base.group_user",
+   "selectors": {
+    "group_code": {
+     "values": [
+      "DK_REF",
+      "SZDK_REF",
+      "DK_AC",
+      "DK_ETC",
+      "SK_WM",
+      "SK_ETC"
+     ]
+    }
+   },
+   "title": "Production quantity by customer / product group, per month",
+   "unit": "pcs",
+   "value_columns": [
+    "month_1",
+    "month_10",
+    "month_11",
+    "month_12",
+    "month_2",
+    "month_3",
+    "month_4",
+    "month_5",
+    "month_6",
+    "month_7",
+    "month_8",
+    "month_9"
+   ],
+   "year_chain": {
+    "current": "year",
+    "previous": "next_year"
+   }
+  },
+  "production_year": {
+   "caveats": [
+    "Typed by users in Settings, one record per year; a value of 0 means not entered.",
+    "A year without a record reads as an empty row: the sheet shows 0."
+   ],
+   "column_groups": {
+    "headcount": [
+     "headcount_1",
+     "headcount_2",
+     "headcount_3",
+     "headcount_4",
+     "headcount_5",
+     "headcount_6",
+     "headcount_7",
+     "headcount_8",
+     "headcount_9",
+     "headcount_10",
+     "headcount_11",
+     "headcount_12"
+    ],
+    "me105_share": [
+     "me105_share_1",
+     "me105_share_2",
+     "me105_share_3",
+     "me105_share_4",
+     "me105_share_5",
+     "me105_share_6",
+     "me105_share_7",
+     "me105_share_8",
+     "me105_share_9",
+     "me105_share_10",
+     "me105_share_11",
+     "me105_share_12"
+    ],
+    "overtime_hours": [
+     "overtime_hours_1",
+     "overtime_hours_2",
+     "overtime_hours_3",
+     "overtime_hours_4",
+     "overtime_hours_5",
+     "overtime_hours_6",
+     "overtime_hours_7",
+     "overtime_hours_8",
+     "overtime_hours_9",
+     "overtime_hours_10",
+     "overtime_hours_11",
+     "overtime_hours_12"
+    ],
+    "ppm_target": [
+     "ppm_target_1",
+     "ppm_target_2",
+     "ppm_target_3",
+     "ppm_target_4",
+     "ppm_target_5",
+     "ppm_target_6",
+     "ppm_target_7",
+     "ppm_target_8",
+     "ppm_target_9",
+     "ppm_target_10",
+     "ppm_target_11",
+     "ppm_target_12"
+    ],
+    "production_target": [
+     "production_target_1",
+     "production_target_2",
+     "production_target_3",
+     "production_target_4",
+     "production_target_5",
+     "production_target_6",
+     "production_target_7",
+     "production_target_8",
+     "production_target_9",
+     "production_target_10",
+     "production_target_11",
+     "production_target_12"
+    ],
+    "productivity": [
+     "productivity_1",
+     "productivity_2",
+     "productivity_3",
+     "productivity_4",
+     "productivity_5",
+     "productivity_6",
+     "productivity_7",
+     "productivity_8",
+     "productivity_9",
+     "productivity_10",
+     "productivity_11",
+     "productivity_12"
+    ],
+    "productivity_target": [
+     "productivity_target_1",
+     "productivity_target_2",
+     "productivity_target_3",
+     "productivity_target_4",
+     "productivity_target_5",
+     "productivity_target_6",
+     "productivity_target_7",
+     "productivity_target_8",
+     "productivity_target_9",
+     "productivity_target_10",
+     "productivity_target_11",
+     "productivity_target_12"
+    ],
+    "special_hours": [
+     "special_hours_1",
+     "special_hours_2",
+     "special_hours_3",
+     "special_hours_4",
+     "special_hours_5",
+     "special_hours_6",
+     "special_hours_7",
+     "special_hours_8",
+     "special_hours_9",
+     "special_hours_10",
+     "special_hours_11",
+     "special_hours_12"
+    ],
+    "total_working_hours": [
+     "total_working_hours_1",
+     "total_working_hours_2",
+     "total_working_hours_3",
+     "total_working_hours_4",
+     "total_working_hours_5",
+     "total_working_hours_6",
+     "total_working_hours_7",
+     "total_working_hours_8",
+     "total_working_hours_9",
+     "total_working_hours_10",
+     "total_working_hours_11",
+     "total_working_hours_12"
+    ]
+   },
+   "model": "dksk.kpi.production_year",
+   "read_audience": "base.group_user",
+   "selectors": {},
+   "title": "Manual inputs per year (targets, headcount, hours, productivity, PPM target)",
+   "unit": "mixed (see column group)",
+   "value_columns": [
+    "headcount_1",
+    "headcount_10",
+    "headcount_11",
+    "headcount_12",
+    "headcount_2",
+    "headcount_3",
+    "headcount_4",
+    "headcount_5",
+    "headcount_6",
+    "headcount_7",
+    "headcount_8",
+    "headcount_9",
+    "me105_share_1",
+    "me105_share_10",
+    "me105_share_11",
+    "me105_share_12",
+    "me105_share_2",
+    "me105_share_3",
+    "me105_share_4",
+    "me105_share_5",
+    "me105_share_6",
+    "me105_share_7",
+    "me105_share_8",
+    "me105_share_9",
+    "overtime_hours_1",
+    "overtime_hours_10",
+    "overtime_hours_11",
+    "overtime_hours_12",
+    "overtime_hours_2",
+    "overtime_hours_3",
+    "overtime_hours_4",
+    "overtime_hours_5",
+    "overtime_hours_6",
+    "overtime_hours_7",
+    "overtime_hours_8",
+    "overtime_hours_9",
+    "ppm_target_1",
+    "ppm_target_10",
+    "ppm_target_11",
+    "ppm_target_12",
+    "ppm_target_2",
+    "ppm_target_3",
+    "ppm_target_4",
+    "ppm_target_5",
+    "ppm_target_6",
+    "ppm_target_7",
+    "ppm_target_8",
+    "ppm_target_9",
+    "production_target_1",
+    "production_target_10",
+    "production_target_11",
+    "production_target_12",
+    "production_target_2",
+    "production_target_3",
+    "production_target_4",
+    "production_target_5",
+    "production_target_6",
+    "production_target_7",
+    "production_target_8",
+    "production_target_9",
+    "productivity_1",
+    "productivity_10",
+    "productivity_11",
+    "productivity_12",
+    "productivity_2",
+    "productivity_3",
+    "productivity_4",
+    "productivity_5",
+    "productivity_6",
+    "productivity_7",
+    "productivity_8",
+    "productivity_9",
+    "productivity_target_1",
+    "productivity_target_10",
+    "productivity_target_11",
+    "productivity_target_12",
+    "productivity_target_2",
+    "productivity_target_3",
+    "productivity_target_4",
+    "productivity_target_5",
+    "productivity_target_6",
+    "productivity_target_7",
+    "productivity_target_8",
+    "productivity_target_9",
+    "special_hours_1",
+    "special_hours_10",
+    "special_hours_11",
+    "special_hours_12",
+    "special_hours_2",
+    "special_hours_3",
+    "special_hours_4",
+    "special_hours_5",
+    "special_hours_6",
+    "special_hours_7",
+    "special_hours_8",
+    "special_hours_9",
+    "total_working_hours_1",
+    "total_working_hours_10",
+    "total_working_hours_11",
+    "total_working_hours_12",
+    "total_working_hours_2",
+    "total_working_hours_3",
+    "total_working_hours_4",
+    "total_working_hours_5",
+    "total_working_hours_6",
+    "total_working_hours_7",
+    "total_working_hours_8",
+    "total_working_hours_9"
+   ],
+   "year_chain": {
+    "current": "year_date",
+    "previous": "next_year"
+   }
+  },
+  "qms_history": {
+   "caveats": [
+    "One table holds IQC, PQC and OQC: pick the form type with `where`; the month is the check date (Datetime).",
+    "IQC rows only carry `qty` (no sample quantity): do not divide ng_qty by qty for IQC without asking the owner.",
+    "overall_result is free text (OK, Pass, NG, Fail): use `filter` with the listed values only.",
+    "The Year filter does not change a pivot read: the year is taken from the filter through a hidden probe, so with a year that has no data every pivot cell shows 0, also the previous-year ones.",
+    "Customer is only reachable through the product's buyer: not available here."
+   ],
+   "date_field": "check_date",
+   "kind": "pivot",
+   "measures": [
+    "__count",
+    "qty",
+    "insp_qty_sampling",
+    "ng_qty",
+    "ok_lot_qty",
+    "ng_lot_qty"
+   ],
+   "model": "mes.qc_form.history",
+   "optional_filters": {
+    "overall_result": {
+     "values": [
+      "OK",
+      "Pass",
+      "NG",
+      "Fail"
+     ]
+    }
+   },
+   "read_audience": "base.group_user",
+   "selectors": {
+    "form_type": {
+     "values": [
+      "iqc",
+      "pqc",
+      "oqc",
+      "iqc_outsourcing",
+      "item_qc",
+      "re_use"
+     ]
+    }
+   },
+   "title": "QMS check history: forms counted or summed per month",
+   "unit": "forms (__count) or pcs"
+  },
+  "report_group": {
+   "aliases": {
+    "group_code": {
+     "DK_AC": [
+      "DK 에어컨",
+      "DK Air Conditioner",
+      "DK AC",
+      "DK_AC"
+     ],
+     "DK_ETC": [
+      "DK 기타",
+      "DK Other",
+      "DK ETC",
+      "DK_ETC"
+     ],
+     "DK_REF": [
+      "DK 냉장고",
+      "DK Refrigerator",
+      "DK REF",
+      "DK_REF"
+     ],
+     "SK_ETC": [
+      "SK 기타",
+      "SK Other",
+      "SK ETC",
+      "SK_ETC"
+     ],
+     "SK_WM": [
+      "SK 세탁기",
+      "SK Washing Machine",
+      "SK WM",
+      "SK_WM"
+     ],
+     "SZDK_REF": [
+      "SZDK 냉장고",
+      "SZDK Refrigerator",
+      "SZDK REF",
+      "SZDK_REF"
+     ],
+     "SZDK_WM": [
+      "SZDK 세탁기",
+      "SZDK Washing Machine",
+      "SZDK WM",
+      "SZDK_WM"
+     ]
+    },
+    "kind": {
+     "produced": [
+      "생산 수량",
+      "Production quantity",
+      "Produced quantity",
+      "Produced"
+     ],
+     "shipped": [
+      "출하 수량",
+      "Shipment quantity",
+      "Shipped quantity",
+      "Finished goods shipment quantity",
+      "Shipped"
+     ]
+    }
+   },
+   "caveats": [
+    "shipped = gross quantity of scanned boxes of done FG Shipping Orders minus boxes of Cancel Shipping, by the order's Shipping Date; a core Return of a done order is not netted out.",
+    "produced = same rule as production_group.",
+    "There is no previous-year chain: ask for the previous year with a second binding of another year only through the Year filter.",
+    "Not company-aware."
+   ],
+   "column_groups": {
+    "months": [
+     "month_1",
+     "month_2",
+     "month_3",
+     "month_4",
+     "month_5",
+     "month_6",
+     "month_7",
+     "month_8",
+     "month_9",
+     "month_10",
+     "month_11",
+     "month_12"
+    ]
+   },
+   "model": "dksk.kpi.report_group",
+   "read_audience": "base.group_user",
+   "selectors": {
+    "group_code": {
+     "values": [
+      "DK_REF",
+      "DK_AC",
+      "DK_ETC",
+      "SK_WM",
+      "SK_ETC",
+      "SZDK_REF",
+      "SZDK_WM"
+     ]
+    },
+    "kind": {
+     "values": [
+      "shipped",
+      "produced"
+     ]
+    }
+   },
+   "title": "Shipped and produced quantity by customer / product group, per month",
+   "unit": "pcs",
+   "value_columns": [
+    "month_1",
+    "month_10",
+    "month_11",
+    "month_12",
+    "month_2",
+    "month_3",
+    "month_4",
+    "month_5",
+    "month_6",
+    "month_7",
+    "month_8",
+    "month_9"
+   ],
+   "year_chain": {
+    "current": "year"
+   }
+  }
+ }
+}
