@@ -25,9 +25,9 @@ address of a real instance. A test (`tests/test_repo_hygiene.py`) scans the tree
 
 ## Install
 
-Once the repository is published (owner and name are fixed at release time):
+From the GitHub repository of the plugin:
 
-    /plugin marketplace add <owner>/<repo>
+    /plugin marketplace add namchamvinhcuu/kpi-skills
     /plugin install odoo-kpi-skills@odoo-kpi
 
 Local check of the plugin folder: `claude plugin validate .`

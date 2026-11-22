@@ -14,9 +14,9 @@ cần dữ liệu chưa có nguồn, Claude sẽ **không tự dựng gì** mà 
 1. **Claude Code** và **Python 3** (lệnh `python`, hoặc `py` trên Windows) trên máy của bạn.
 2. Một tài khoản Odoo nội bộ của chính bạn. Quản trị viên Odoo đã chạy `setup_instance.py` và đã cho tài khoản của bạn
    quyền tạo dashboard (xem mục 7). Nếu chưa, bước xuất bản sẽ báo lỗi và bạn nhờ quản trị viên.
-3. Cài plugin (chủ kho và tên kho được điền khi phát hành):
+3. Cài plugin:
    ```
-   /plugin marketplace add <owner>/<repo>
+   /plugin marketplace add namchamvinhcuu/kpi-skills
    /plugin install odoo-kpi-skills@odoo-kpi
    ```
 

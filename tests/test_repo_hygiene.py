@@ -42,12 +42,43 @@ WORKFLOW_OUTPUT_PATTERNS = ("baseline*.json", "dashboard*.json", "kpi_spec*.json
 DESIGN_FILE_PATTERNS = ("*.xls*", "*.pdf", "*.pptx", "*.docx")
 
 
+# The ONE public spelling of the owner login: the repository slug named by the install line of the READMEs
+# (`/plugin marketplace add <slug>`). Built from fragments like the words above.
+REPO_SLUG = "namcham" + "vinhcuu" + "/kpi-" + "skills"
+# An allowed occurrence of the slug: either right after `github.com/`, or not glued to a word character, a `/`, a `.`,
+# a backslash or a `-` on its left (no `x<slug>`, no `/home/<slug>`, no `a.<slug>`); and not followed by a word
+# character or a `-` (no `<slug>-x`, no `<slug>x`). Case-insensitive like the rest of the scan.
+ALLOWED_SLUG = re.compile(r"(?:(?<=github\.com/)|(?<![\w/.\\-]))" + re.escape(REPO_SLUG) + r"(?![\w-])", re.IGNORECASE)
+
+
+def is_utf8_text(raw):
+    """True for real text: valid UTF-8 without a NUL byte (UTF-16 text and binary data are not)."""
+    if b"\x00" in raw:
+        return False
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def has_term(raw, term):
     """Whether the bytes `raw` hold `term` (lower case) in any case: as UTF-8 / ASCII text, as UTF-16 text, or inside
-    binary data (bytes that are no valid text are decoded with replacement, the term's own bytes survive)."""
+    binary data (bytes that are no valid text are decoded with replacement, the term's own bytes survive).
+    The ONLY exemption: in real UTF-8 text every allowed occurrence of `REPO_SLUG` is blanked first - by a single space,
+    never by nothing, so the two sides of it cannot join into a word. UTF-16 text and binary data get none."""
     lowered = raw.lower()
-    return term in raw.decode("utf-8", "replace").lower() or any(
+    text = raw.decode("utf-8", "replace")
+    if is_utf8_text(raw):
+        text = ALLOWED_SLUG.sub(" ", text)
+    return term in text.lower() or any(
         term.encode(encoding) in lowered for encoding in ("utf-16-le", "utf-16-be"))
+
+
+def name_has_term(rel, term):
+    """Whether a relative path (folder and file names) holds `term` in any case. No slug exemption here: the slug is
+    allowed in the TEXT of a page, never in a path."""
+    return term in rel.lower()
 
 
 def scan_words(folder, root):
@@ -58,7 +89,8 @@ def scan_words(folder, root):
     for path in sorted(folder.rglob("*")):
         if path.is_file() and "__pycache__" not in path.relative_to(folder).parts:
             raw = path.read_bytes()
-            findings += [(path.relative_to(root).as_posix(), term) for term in FORBIDDEN_TEXT if has_term(raw, term)]
+            rel = path.relative_to(root).as_posix()
+            findings += [(rel, term) for term in FORBIDDEN_TEXT if has_term(raw, term) or name_has_term(rel, term)]
     return findings
 
 
@@ -103,6 +135,7 @@ def scan_tree(root, skip_top_level=SKIP_TOP_LEVEL):
         for name in sorted(files):
             path = here / name
             rel = path.relative_to(root).as_posix()
+            findings += [(rel, "forbidden text in name: " + term) for term in FORBIDDEN_TEXT if name_has_term(rel, term)]
             if name.lower().endswith(FORBIDDEN_FILE_SUFFIXES):
                 findings.append((rel, "forbidden file type"))
                 continue
@@ -525,6 +558,240 @@ class GitignoreTests(unittest.TestCase):
                 (root / rel).write_text("{}")
             self.assertEqual(workflow_outputs(root), [".hid/baseline.json", "a/b/Dashboard_v2.JSON", "baseline.json",
                                                       "tests/kpi_spec-1.json"])
+
+
+class RepoSlugExemptionTests(unittest.TestCase):
+    """The READMEs name the GitHub repository in the install line, so the slug (the owner login + the repository name)
+    is the ONLY allowed spelling of the login, and only in UTF-8 text. Everything else stays forbidden.
+    The slug is always built from `REPO_SLUG` / fragments here: this folder must not spell it either."""
+    SLUG = REPO_SLUG
+    LOGIN = DEV_LOGIN
+    LOGIN_REASON = "forbidden text: " + DEV_LOGIN
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="kpi-hygiene-slug-")
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def put(self, rel, data):
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
+        return path
+
+    def reasons(self):
+        return sorted(reason for _, reason in scan_tree(self.root))
+
+    def clear(self):
+        for path in sorted(self.root.rglob("*"), reverse=True):
+            path.unlink() if path.is_file() else path.rmdir()
+
+    def assert_flagged(self, label, data, reason=None):
+        with self.subTest(label=label):
+            self.clear()
+            self.put("README.md", data)
+            self.assertIn(reason or self.LOGIN_REASON, self.reasons())
+
+    def assert_allowed(self, label, data):
+        with self.subTest(label=label):
+            self.clear()
+            self.put("README.md", data)
+            self.assertEqual(scan_tree(self.root), [])
+            self.assertEqual(scan_words(self.root, self.root), [])
+
+    # ------------------------------------------------------------------ what is allowed
+
+    def test_the_slug_is_fragment_built_and_the_source_does_not_spell_it(self):
+        self.assertEqual(REPO_SLUG, REPO_SLUG.lower())
+        self.assertTrue(REPO_SLUG.startswith(DEV_LOGIN + "/") and REPO_SLUG.endswith("/kpi-" + "skills"))
+        self.assertNotIn(REPO_SLUG, Path(__file__).read_text(encoding="utf-8").lower())
+        self.assertEqual(scan_words(REPO / "tests", REPO), [])
+
+    def test_the_install_line_and_the_usual_spellings_of_the_slug_are_allowed(self):
+        slug = self.SLUG
+        for label, text in (("install line", "    /plugin marketplace add %s\n    /plugin install odoo-kpi-skills@odoo-kpi\n" % slug),
+                            ("indented fence", "   ```\n   /plugin marketplace add %s\n   ```\n" % slug),
+                            ("backticks", "the repo `%s` holds it" % slug),
+                            ("double quotes", 'repo = "%s"' % slug), ("single quotes", "repo = '%s'" % slug),
+                            ("parentheses", "(%s)" % slug), ("brackets", "[%s]" % slug),
+                            ("https url", "see https://github.com/%s for it" % slug),
+                            ("https url with .git", "git clone https://github.com/%s.git\n" % slug),
+                            ("url with a path", "https://github.com/%s/issues/1" % slug),
+                            ("upper case url", "HTTPS://GITHUB.COM/%s" % slug.upper()),
+                            ("ssh url", "git@github.com:%s.git" % slug),
+                            ("start of the file", "%s is the repository" % slug),
+                            ("end of the file, no newline", "the repository is " + slug),
+                            ("alone", slug), ("alone with a newline", slug + "\n"),
+                            ("crlf", "a\r\n/plugin marketplace add %s\r\nb\r\n" % slug),
+                            ("crlf start and end", slug + "\r\n" + slug),
+                            ("upper case", slug.upper()), ("title case", slug.title()),
+                            ("mixed case", slug[:5].upper() + slug[5:]),
+                            ("comma and dot after it", "%s, %s." % (slug, slug)), ("colon after it", slug + ": the repo"),
+                            ("tab around it", "\t" + slug + "\t"),
+                            ("twice", "%s and %s" % (slug, slug)), ("in a table cell", "| %s |" % slug)):
+            self.assert_allowed(label, text)
+
+    def test_an_allowed_slug_is_blanked_by_a_single_space_so_its_sides_cannot_join(self):
+        # nothing in the real denylist can span the slug (its neighbours are never word characters), so a made-up term
+        # proves the rule: with an empty replacement "(" + slug + ")" would read "()"
+        raw = ("x(" + self.SLUG + ")y").encode("utf-8")
+        self.assertFalse(has_term(raw, "()"))
+        self.assertFalse(has_term(raw, "x()y"))
+        self.assertTrue(has_term(raw, "x( )y"))
+        self.assertFalse(has_term(raw, self.SLUG[:6]))            # the slug itself is gone from the searched text
+        self.assertTrue(has_term(raw, "x("))                      # the rest of the text is still searched
+
+    def test_the_exemption_is_exactly_the_slug_regex(self):
+        self.assertIsNotNone(ALLOWED_SLUG.fullmatch(self.SLUG))
+        self.assertIsNotNone(ALLOWED_SLUG.fullmatch(self.SLUG.upper()))
+        self.assertIsNone(ALLOWED_SLUG.fullmatch(self.LOGIN + "/other"))
+        self.assertTrue(ALLOWED_SLUG.flags & re.IGNORECASE)
+
+    # ------------------------------------------------------------------ what is still forbidden
+
+    def test_the_bare_login_and_the_login_with_another_repository_are_flagged(self):
+        login, slug = self.LOGIN, self.SLUG
+        for label, text in (("bare", "owner: " + login), ("bare alone", login), ("bare upper", login.upper()),
+                            ("other repository", login + "/other-repo"),
+                            ("other repository upper", login.upper() + "/OTHER"),
+                            ("the repository name only partly", login + "/kpi-" + "skill"),
+                            ("another repository named skills", login + "/skills"),
+                            ("kpi-skills of somebody else", "other/kpi-" + "skills " + login),
+                            ("url of another repository", "https://github.com/" + login + "/dotfiles"),
+                            ("profile url", "https://github.com/" + login),
+                            ("login then slash then the slug", login + "/" + slug),
+                            ("a slug hiding a second bare login", slug + " " + login)):
+            self.assert_flagged(label, text)
+
+    def test_a_slug_followed_by_a_word_character_or_a_hyphen_is_flagged(self):
+        slug = self.SLUG
+        for label, text in (("hyphen word", slug + "-x"), ("letter", slug + "x"), ("digit", slug + "2"),
+                            ("underscore", slug + "_x"), ("lone hyphen", slug + "-"), ("hyphen then digits", slug + "-1"),
+                            ("upper case suffix", slug.upper() + "X"),
+                            ("suffix on a url", "https://github.com/" + slug + "-fork")):
+            self.assert_flagged(label, text)
+
+    def test_a_slug_glued_to_something_on_its_left_is_flagged(self):
+        login, slug = self.LOGIN, self.SLUG
+        for label, text in (("letter", "x" + slug), ("digit", "9" + slug), ("underscore", "_" + slug),
+                            ("hyphen", "-" + slug), ("dot", "a." + slug), ("slash", "/" + slug),
+                            ("home folder", "/home/" + slug), ("home folder, split slug", "/home/" + login + "/kpi-" + "skills"),
+                            ("tilde folder", "~/" + slug), ("windows folder", "C:\\Users\\" + slug),
+                            ("backslash", "\\" + slug), ("scheme without a host", "https://" + slug),
+                            ("another host", "https://gitlab.com/" + slug), ("example host", "https://example.org/" + slug),
+                            ("another dot com host", "https://x.com/" + slug),
+                            ("a path that merely ends in a slash", "https://github.com.evil/" + slug),
+                            ("github without its dot", "https://githubxcom/" + slug),
+                            ("two slugs glued by a slash", slug + "/" + slug),
+                            ("upper case, glued", "X" + slug.upper())):
+            self.assert_flagged(label, text)
+
+    def test_the_other_forbidden_words_stay_flagged_next_to_and_around_a_slug(self):
+        slug, label_uat, company = self.SLUG, UAT_LABEL, COMPANY_DOMAIN
+        uat_reason, company_reason = "forbidden text: " + label_uat, "forbidden text: " + company
+        for label, text, reason in (("uat label beside a slug", label_uat + " " + slug, uat_reason),
+                                    ("uat label after a slug", slug + " " + label_uat, uat_reason),
+                                    ("company domain beside a slug", "https://x." + company + " " + slug, company_reason),
+                                    ("company domain right after a slug", slug + "." + company, company_reason),
+                                    ("company domain right before a slug", company + " " + slug, company_reason),
+                                    ("uat label split by a slug", "nam" + slug + "-dksk", self.LOGIN_REASON),
+                                    ("company split by a slug", "autonsi" + slug + ".cloud", self.LOGIN_REASON),
+                                    ("uat label, space-joined", "nam " + slug + " -dksk", None)):
+            if reason is None:
+                # nothing of the label is left once the slug is blanked: the slug alone is allowed there
+                self.assert_allowed(label, text)
+            else:
+                self.assert_flagged(label, text, reason)
+
+    def test_one_bad_occurrence_is_enough_when_good_ones_are_present(self):
+        slug = self.SLUG
+        for label, text in (("good then glued", "add %s then /home/%s" % (slug, slug)),
+                            ("glued then good", "/home/%s then add %s" % (slug, slug)),
+                            ("good then suffixed", "%s %s-x" % (slug, slug)),
+                            ("good then bare login", "%s and %s" % (slug, self.LOGIN))):
+            self.assert_flagged(label, text)
+
+    def test_the_slug_inside_utf16_text_is_flagged(self):
+        slug = self.SLUG
+        for label, data in (("utf-16 le", slug.encode("utf-16-le")), ("utf-16 be", slug.encode("utf-16-be")),
+                            ("utf-16 with bom", slug.encode("utf-16")),
+                            ("utf-16 le, install line", ("/plugin marketplace add " + slug + "\n").encode("utf-16-le")),
+                            ("utf-16 upper", slug.upper().encode("utf-16-le"))):
+            with self.subTest(label=label):
+                self.clear()
+                self.put("README.md", data)
+                self.assertIn(self.LOGIN_REASON, self.reasons())
+                self.assertEqual([term for _, term in scan_words(self.root, self.root)], [self.LOGIN])
+
+    def test_the_slug_inside_binary_data_is_flagged(self):
+        slug = self.SLUG.encode("utf-8")
+        for label, data in (("nul bytes around it", b"\x00" + slug + b"\x00"), ("zip like", b"PK\x03\x04" + b"\x00" * 30 + slug),
+                            ("invalid utf-8 byte, no nul", b"\xff " + slug + b" \xfe"),
+                            ("all byte values", bytes(range(1, 256)) + b" " + slug + b" ")):
+            with self.subTest(label=label):
+                self.clear()
+                self.put("blob.bin", data)
+                self.assertIn(self.LOGIN_REASON, self.reasons())
+                self.assertEqual([term for _, term in scan_words(self.root, self.root)], [self.LOGIN])
+
+    def test_a_valid_utf8_page_with_non_ascii_text_still_gets_the_exemption(self):
+        # the Vietnamese README: the exemption is for real UTF-8 text, accents included
+        self.assert_allowed("vietnamese", "3. Cài plugin:\n   /plugin marketplace add %s\n   Xong rồi.\n" % self.SLUG)
+
+    def test_the_slug_in_a_file_or_folder_name_is_flagged(self):
+        login, slug = self.LOGIN, self.SLUG
+        for label, rel in (("login as a file name", login + ".txt"), ("slug as one file name", slug.replace("/", "_")),
+                           ("slug as two folders", slug + "/page.md"), ("slug as the folder of a file", "docs/" + slug + "/a.md"),
+                           ("upper case file name", login.upper() + ".md"),
+                           ("login inside a long name", "notes-for-" + login + "-v2.txt")):
+            with self.subTest(label=label):
+                self.clear()
+                self.put(rel, "nothing to see\n")
+                self.assertTrue([r for r in self.reasons() if r.startswith("forbidden text in name: ")], rel)
+                self.assertEqual([term for _, term in scan_words(self.root, self.root)], [login])
+
+    def test_a_clean_name_is_not_flagged_by_the_name_scan(self):
+        self.put("docs/kpi-" + "skills-notes.md", "x\n")
+        self.put("namcham-notes.txt", "x\n")                 # only part of the login
+        self.assertEqual(scan_tree(self.root), [])
+        self.assertEqual(scan_words(self.root, self.root), [])
+
+    def test_the_tests_folder_scan_keeps_flagging_the_login_outside_the_slug(self):
+        folder = self.root / "tests"
+        folder.mkdir()
+        (folder / "a.py").write_text('X = "ok %s"\nY = "%s"\n' % (self.SLUG, self.LOGIN), encoding="utf-8")
+        self.assertEqual(scan_words(folder, self.root), [("tests/a.py", self.LOGIN)])
+
+
+class ReadmeInstallLineTests(unittest.TestCase):
+    """The shipped READMEs carry the real install line, not a placeholder."""
+    FILES = ("README.md", "README.vi.md")
+    INSTALL = re.compile(r"(?m)^[ \t]*/plugin marketplace add " + re.escape(REPO_SLUG) + r"[ \t]*$")
+
+    def test_each_readme_has_the_install_line_with_the_slug(self):
+        for name in self.FILES:
+            with self.subTest(file=name):
+                text = (REPO / name).read_text(encoding="utf-8")
+                self.assertEqual(len(self.INSTALL.findall(text)), 1, name)
+                self.assertIn("/plugin marketplace add " + REPO_SLUG, text)
+
+    def test_no_owner_or_repo_placeholder_is_left_in_a_readme(self):
+        for name in self.FILES:
+            with self.subTest(file=name):
+                text = (REPO / name).read_text(encoding="utf-8").lower()
+                for placeholder in ("<" + "owner" + ">", "<" + "repo" + ">"):
+                    self.assertNotIn(placeholder, text)
+
+    def test_the_readmes_pass_the_hygiene_scan_only_through_the_slug_exemption(self):
+        for name in self.FILES:
+            with self.subTest(file=name):
+                raw = (REPO / name).read_bytes()
+                self.assertTrue(is_utf8_text(raw))
+                self.assertEqual([term for term in FORBIDDEN_TEXT if has_term(raw, term)], [])
+                # control: the same page with its slug cut down to the bare login is refused
+                broken = raw.replace(REPO_SLUG.encode(), DEV_LOGIN.encode())
+                self.assertNotEqual(broken, raw)
+                self.assertEqual([term for term in FORBIDDEN_TEXT if has_term(broken, term)], [DEV_LOGIN])
 
 
 if __name__ == "__main__":
