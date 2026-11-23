@@ -9,6 +9,32 @@ cần dữ liệu chưa có nguồn, Claude sẽ **không tự dựng gì** mà 
 
 > Kho mã này công khai: không bao giờ đưa vào đây file Excel của khách, mật khẩu, API key hay địa chỉ máy chủ thật.
 
+## Bắt đầu nhanh: chỉ nhớ 2 lệnh
+
+**Làm một lần trên mỗi máy (khoảng 15 phút).** Mở Claude Code và gõ:
+
+```
+/plugin marketplace add namchamvinhcuu/kpi-skills
+/plugin install odoo-kpi-skills@odoo-kpi
+/odoo-kpi-skills:kpi-setup
+```
+
+Lệnh thứ ba để Claude hướng dẫn từng việc một: kiểm tra Python, tạo API key trong Odoo, chạy lệnh tạo file cấu hình trong cửa sổ
+dòng lệnh của bạn. Bạn chỉ cần có sẵn **địa chỉ Odoo, tên cơ sở dữ liệu, tên đăng nhập** (quản trị viên Odoo đưa cho bạn).
+
+**Mỗi lần dựng một KPI.** Gõ một lệnh:
+
+```
+/odoo-kpi-skills:kpi
+```
+
+Gõ xong, dán thêm **địa chỉ file Excel** vào cùng dòng nếu bạn đã có (không có cũng không sao: Claude chỉ cho bạn 3 việc trong Odoo
+để lấy địa chỉ). Sau đó chỉ cần trả lời các câu Claude hỏi; câu nào cũng có sẵn gợi ý nên đa số bạn nói "đồng ý". Claude chỉ
+xuất bản khi bạn nói "đồng ý" ở bản chạy thử, và cuối cùng hỏi bạn có muốn xóa các file tạm không. Không cần dán đoạn
+yêu cầu dài nào.
+
+Các mục dưới đây là chi tiết, đọc khi cần.
+
 ## 1. Cần gì trước khi dùng (khoảng 15 phút, làm một lần)
 
 1. **Claude Code** và **Python 3** (lệnh `python`, hoặc `py` trên Windows) trên máy của bạn. Trên Windows hãy dùng Python tải
@@ -19,11 +45,7 @@ cần dữ liệu chưa có nguồn, Claude sẽ **không tự dựng gì** mà 
    (lệnh `py` có thể chọn bản Store nếu đó là bản mới nhất). Nếu đúng là bản đó và không đọc được quyền file, thông báo lỗi sẽ nói rõ.
 2. Một tài khoản Odoo nội bộ của chính bạn. Quản trị viên Odoo đã chạy `setup_instance.py` và đã cho tài khoản của bạn
    quyền tạo dashboard (xem mục 7). Nếu chưa, bước xuất bản sẽ báo lỗi và bạn nhờ quản trị viên.
-3. Cài plugin:
-   ```
-   /plugin marketplace add namchamvinhcuu/kpi-skills
-   /plugin install odoo-kpi-skills@odoo-kpi
-   ```
+3. Cài plugin: hai lệnh `/plugin ...` nằm ở phần "Bắt đầu nhanh" ngay phía trên.
 
 ## 2. Tạo API key riêng cho máy này (5 phút)
 
@@ -97,7 +119,8 @@ hoặc mới**; chỉ khi bạn đồng ý, và lời đồng ý nêu rõ các �
 Tên tab Excel hoặc tên dashboard có ký tự đặc biệt (dấu nháy, `$`, `&`, `;`, `|`, `(`, `)`, `%`, `^`, `!`, dấu gạch ngược...) thì
 Claude không đưa vào lệnh mà nhờ bạn đổi tên tab hoặc gõ lại tên dashboard.
 
-**Lệnh nhanh:** `/odoo-kpi-skills:kpi <địa chỉ Excel trong Odoo Documents> [đường dẫn file design]` bắt đầu cả quy trình trên.
+**Lệnh nhanh:** `/odoo-kpi-skills:kpi [địa chỉ Excel trong Odoo Documents] [đường dẫn file design]` bắt đầu cả quy trình trên (để
+trống cũng được, Claude sẽ hỏi). Lần đầu trên một máy: `/odoo-kpi-skills:kpi-setup`.
 
 Hai bước mới do hai script chạy phía sau (Claude gọi, bạn không phải gõ): `scripts/scan_excel.py` (bước 4, quét Excel và đề
 xuất bảng, chạy không cần mạng) và `scripts/reconcile_kpi.py` (bước 5, đối chiếu số, chỉ đọc dữ liệu).

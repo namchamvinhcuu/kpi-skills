@@ -3,14 +3,14 @@
 A Claude Code plugin: skills and small scripts that let QA/QC staff ask Claude Code to build a KPI dashboard
 in Odoo from an Excel file that sits in Documents, bound to data sources that already exist.
 
-Status: **0.1.3, work in progress**. QA/QC staff: read `README.vi.md` (Vietnamese guide).
+Status: **0.1.4, work in progress**. QA/QC staff: read `README.vi.md` (Vietnamese guide).
 
 What is in the plugin:
 
 | part | file | what it does |
 |---|---|---|
 | skills | `skills/kpi-builder`, `skills/kpi-source-catalog` | the workflow Claude follows and the map of data sources |
-| command | `commands/kpi.md` | `/odoo-kpi-skills:kpi <Excel address> [design file]` starts the workflow |
+| commands | `commands/kpi.md`, `commands/kpi-setup.md` | `/odoo-kpi-skills:kpi [Excel address] [design file]` starts the workflow (nothing has to follow it); `/odoo-kpi-skills:kpi-setup` is the one-time guided setup of a computer |
 | connection | `scripts/odoo_rpc.py` | JSON-RPC client, private config file check, full-host-name confirmation |
 | intake | `scripts/intake_xlsx.py` | Excel in Documents -> cropped, deterministic baseline JSON (File > Snapshot or Download as JSON) |
 | formulas | `scripts/validate_formulas.py`, `scripts/client_functions.json` | only functions the Odoo client registers; test evaluator |

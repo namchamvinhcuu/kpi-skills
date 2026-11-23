@@ -41,6 +41,20 @@ THEIR language (Vietnamese, Korean or English). Everything below is for you; the
    in their own terminal; the key must never pass through this session. If there is no config, tell the user to run it
    themselves (step 0).
 
+## Talking to the user
+
+The user is usually a QA/QC person who is NOT technical.
+- Their language (Vietnamese, Korean or English), short sentences, ONE thing at a time; after each step say in one line
+  what is done.
+- Never use a technical name in a question (`report_group`, `keep_typed`, `ratio`, `zero: dash`): say it in plain words
+  ("show a dash instead of 0?"). Technical names are for the spec file only.
+- Every question comes with YOUR recommendation, so that "yes" or a choice is enough. Ask only what you cannot read from
+  the Excel, the address or the scan.
+- Before the first run ask ONE question: the name or code the dashboard title should carry (the group may share one Odoo
+  account, the title tells who made it). Name the dashboard from the user's words, never from the Excel.
+- An error: show it as it is, explain it in plain words, propose a fix. Not solvable here: tell the user to ask the
+  Odoo administrator (or the plugin maintainer for a bug).
+
 ## Workflow
 
 ### 0. Preflight (once per session)
@@ -252,6 +266,13 @@ will see: month headers typed in the Excel (for example `26년 1월`) do not fol
 Excel now shows `0`, `-` for a zero where asked, `N/A` for a ratio without a denominator, pivot cells (QMS) follow the Year filter
 through a hidden probe and show 0 for every month when the selected year has no data (also the previous-year cells).
 Offer to adjust the spec and publish a new version.
+
+### 8. Clean up
+
+The work folder (`baseline.json`, `dashboard.json`, the aliases file and the spec) holds the customer's Excel content.
+At the end remind the user of that and ask whether to delete it. Delete only after a yes, and only the files you made
+in this session, never the user's own Excel or a folder you did not create. Keep the `<kpi slug>.spec.json` when they
+want next month's run to start from it (Reuse, step 4): say that deleting it means a new interview next time.
 
 ## Troubleshooting you will meet
 

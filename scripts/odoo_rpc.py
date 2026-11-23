@@ -35,7 +35,7 @@ import warnings
 
 import kpi_catalogs
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 USER_AGENT = "odoo-kpi-skills/" + VERSION
 ENV_NAMES = {"url": "ODOO_KPI_URL", "db": "ODOO_KPI_DB", "login": "ODOO_KPI_LOGIN",
              "api_key": "ODOO_KPI_API_KEY"}  # secret-allow: names of environment variables, not a value
