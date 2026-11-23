@@ -3,7 +3,7 @@
 A Claude Code plugin: skills and small scripts that let QA/QC staff ask Claude Code to build a KPI dashboard
 in Odoo from an Excel file that sits in Documents, bound to data sources that already exist.
 
-Status: **0.1.2, work in progress**. QA/QC staff: read `README.vi.md` (Vietnamese guide).
+Status: **0.1.3, work in progress**. QA/QC staff: read `README.vi.md` (Vietnamese guide).
 
 What is in the plugin:
 
@@ -64,6 +64,13 @@ The file must be private to you, and the scripts refuse to read it otherwise:
   Any other entry (Everyone, Users, Domain Users, another account) is refused: remove it with `icacls`.
   If the check cannot read the permissions at all, the scripts refuse as well: use the environment variables above
   instead of a file.
+- Windows, which Python: use Python from python.org (`winget install Python.Python.3.12` is that build), NOT the one
+  from the Microsoft Store. The Store build is expected to redirect `%APPDATA%` into its own `LocalCache` folder, so
+  `icacls` (which is not sandboxed) would not find the config file and the check would fail (not verified on a real
+  machine). Check which Python you run: `py -0p` or `python -c "import sys; print(sys.executable)"`, and avoid a path
+  that contains `WindowsApps` or `PythonSoftwareFoundation` (the `py` launcher may pick a Store build if it is the
+  newest one installed). When the running Python is such a build and the permissions cannot be read, the error says so.
+  Separately, `icacls /save` may write its result as UTF-16 without a byte order mark: the check reads both forms (0.1.3).
 
 Check the file and the connection:
 

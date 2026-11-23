@@ -11,7 +11,12 @@ cần dữ liệu chưa có nguồn, Claude sẽ **không tự dựng gì** mà 
 
 ## 1. Cần gì trước khi dùng (khoảng 15 phút, làm một lần)
 
-1. **Claude Code** và **Python 3** (lệnh `python`, hoặc `py` trên Windows) trên máy của bạn.
+1. **Claude Code** và **Python 3** (lệnh `python`, hoặc `py` trên Windows) trên máy của bạn. Trên Windows hãy dùng Python tải
+   từ python.org (hoặc `winget install Python.Python.3.12`), **không dùng Python cài từ Microsoft Store**: bản đó chuyển
+   hướng `%APPDATA%` vào thư mục riêng của nó (chưa kiểm chứng trên máy thật), nên `icacls` không thấy file cấu hình và
+   `init-config` báo lỗi về quyền của file. Kiểm tra bản đang dùng bằng `py -0p` hoặc
+   `python -c "import sys; print(sys.executable)"`, tránh đường dẫn có `WindowsApps` hoặc `PythonSoftwareFoundation`
+   (lệnh `py` có thể chọn bản Store nếu đó là bản mới nhất). Nếu đúng là bản đó và không đọc được quyền file, thông báo lỗi sẽ nói rõ.
 2. Một tài khoản Odoo nội bộ của chính bạn. Quản trị viên Odoo đã chạy `setup_instance.py` và đã cho tài khoản của bạn
    quyền tạo dashboard (xem mục 7). Nếu chưa, bước xuất bản sẽ báo lỗi và bạn nhờ quản trị viên.
 3. Cài plugin:

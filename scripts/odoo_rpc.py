@@ -35,7 +35,7 @@ import warnings
 
 import kpi_catalogs
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 USER_AGENT = "odoo-kpi-skills/" + VERSION
 ENV_NAMES = {"url": "ODOO_KPI_URL", "db": "ODOO_KPI_DB", "login": "ODOO_KPI_LOGIN",
              "api_key": "ODOO_KPI_API_KEY"}  # secret-allow: names of environment variables, not a value
@@ -54,6 +54,20 @@ WINDOWS_ALLOWED_SIDS = frozenset({"SY", "BA", "OW", "CO", "S-1-5-18", "S-1-5-32-
 _ALLOW_ACE_TYPES = frozenset({"A", "OA", "XA", "ZA"})
 _DENY_OR_AUDIT_ACE_TYPES = frozenset({"D", "OD", "XD", "AU", "OU", "XU", "AL", "ML", "RA", "SP", "TL"})
 WINDOWS_FALLBACK = "; use the ODOO_KPI_* environment variables instead of a config file"
+# Bytes at the end of the `icacls /save` file used to tell UTF-16 without a BOM from UTF-8 (the DACL line).
+TAIL_BYTES = 128
+# Python of the Microsoft Store (or its package folder) redirects %APPDATA%: icacls, which is not sandboxed, cannot see
+# the config file there.
+STORE_PYTHON_HINT = (" (this Python is the Microsoft Store build, which is expected to redirect %APPDATA% so that the "
+                     "permissions of the config file cannot be read: install Python from python.org and check it "
+                     "with `py -0p`)")
+
+
+def _store_python_hint(executable=None):
+    """STORE_PYTHON_HINT when the running Python lives in a Microsoft Store folder, else an empty string."""
+    # str(): sys.executable may be None or empty when Python cannot tell; a hint must never hide the real refusal.
+    path = str((sys.executable if executable is None else executable) or "").lower().replace("/", "\\")
+    return STORE_PYTHON_HINT if ("\\windowsapps\\" in path or "pythonsoftwarefoundation" in path) else ""
 
 
 class ConfigError(Exception):
@@ -122,10 +136,36 @@ def _read_sddl(path, run=None):
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     try:
-        return raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8", "replace")
+        return _decode_icacls(raw)
     except UnicodeDecodeError:
         raise GuardError("cannot read the permissions of the config file (unreadable icacls output)"
                          + WINDOWS_FALLBACK) from None
+
+
+def _decode_icacls(raw):
+    """Text of an `icacls /save` file. It is UTF-16 on Windows, with a BOM on most builds but WITHOUT one on some
+    (reported 0.1.2: read as UTF-8 every character is followed by a NUL, `D:(` is never found and the check says it
+    "could not read any permission entry"). Without a BOM the byte pattern decides: ASCII text in UTF-16LE has a NUL at
+    almost every odd position and at almost no even one (BE: the reverse); anything else is UTF-8 as before."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    if len(raw) >= 4:
+        # Only the END of the file is measured (the DACL line, always ASCII): the first line is the file name, which may
+        # hold any characters (Vietnamese, Korean ...) and must not hide that the text is UTF-16. The start is kept
+        # even so that even / odd stay the positions counted from the beginning of the file.
+        start = max(0, len(raw) - TAIL_BYTES)
+        start -= start % 2
+        even, odd = raw[start::2], raw[start + 1::2]
+        if odd.count(0) >= 0.9 * len(odd) and even.count(0) <= 0.1 * len(even):
+            return raw.decode("utf-16-le")
+        if even.count(0) >= 0.9 * len(even) and odd.count(0) <= 0.1 * len(odd):
+            return raw.decode("utf-16-be")
+    if b"\x00" in raw:
+        # Fail closed: UTF-8 text never holds a NUL. A NUL here is UTF-16 this check could not recognise, and read as
+        # UTF-8 a file name made of code units whose two bytes are ASCII could spell a fake `D:(...)` line of its own.
+        at = raw.index(b"\x00")
+        raise UnicodeDecodeError("utf-8", raw, at, at + 1, "NUL byte in the icacls output")
+    return raw.decode("utf-8", "replace")
 
 
 def _current_user_sid(run=None):
@@ -206,8 +246,16 @@ def check_private_file(path, os_name=None, sddl=None, user_sid=None, stat_fn=os.
     """Raise GuardError unless `path` is private to the current user."""
     os_name = os.name if os_name is None else os_name
     if os_name == "nt":
-        text = sddl(path) if sddl else _read_sddl(path)
-        check_sddl(text, user_sid or _current_user_sid())
+        try:
+            text = sddl(path) if sddl else _read_sddl(path)
+            check_sddl(text, user_sid or _current_user_sid())
+        except GuardError as exc:
+            hint = _store_python_hint()
+            # Only the "could not read the permissions" family: a real "accessible by ..." refusal gets no hint.
+            if hint and ("cannot read the permissions" in str(exc)
+                         or "could not read any permission entry" in str(exc)):
+                raise GuardError(str(exc) + hint) from None
+            raise
         return
     info = stat_fn(path)
     if info.st_mode & 0o077:

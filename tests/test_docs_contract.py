@@ -934,6 +934,41 @@ class ReadmeTests(DocCase):
         self.assertEqual(says(read(README), r"init-config", r"normal terminal", r"not inside claude code",
                               r"agent must never run"), [])
 
+    def test_readme_en_warns_windows_users_off_the_microsoft_store_python(self):
+        # 0.1.3: the Store build redirects %APPDATA%, so icacls (not sandboxed) cannot see the config file
+        text = read(README)
+        flat = squash(text)
+        for word in ("Microsoft Store", "python.org", "`py`", "LocalCache", "icacls"):
+            self.assertIn(word, text, "README.md does not mention %s" % word)
+        # Updated ON PURPOSE round 2: no blind "use the py launcher"; check which Python runs, avoid the Store folders,
+        # and the Store redirect is marked as not verified on a real machine.
+        self.assertEqual(says(text, r"use python from python\.org",
+                              r"not the one from the microsoft store",
+                              r"redirect %appdata% into its own localcache folder",
+                              r"not verified on a real machine",
+                              r"py -0p", r"sys\.executable", r"windowsapps", r"pythonsoftwarefoundation",
+                              r"the error says so"), [])
+        # one bullet: the key phrases sit within the same paragraph, not scattered over the README
+        paragraph = next(p for p in re.split(r"\n\s*\n", text) if "Microsoft Store" in p)
+        for word in ("python.org", "`py`", "LocalCache", "WindowsApps", "PythonSoftwareFoundation", "py -0p"):
+            self.assertIn(word, paragraph)
+        self.assertNotIn("use the py launcher", flat)           # the old blind advice
+        self.assertIn("without a byte order mark", flat)
+
+    def test_readme_vi_warns_windows_users_off_the_microsoft_store_python(self):
+        # 0.1.3: the same advice for the QA/QC staff, in Vietnamese
+        text = read(README_VI)
+        for word in ("Microsoft Store", "python.org", "`py`", "icacls"):
+            self.assertIn(word, text, "README.vi.md does not mention %s" % word)
+        flat = squash(text)
+        self.assertRegex(flat, r"không dùng python cài từ microsoft store",
+                         "README.vi.md must tell Windows users not to use the Microsoft Store Python")
+        # Updated ON PURPOSE round 2: how to check the running Python, the folders to avoid, "not verified yet"
+        self.assertRegex(flat, r"chưa kiểm chứng")
+        paragraph = next(p for p in re.split(r"\n\s*\n", text) if "Microsoft Store" in p)
+        for word in ("python.org", "`py`", "icacls", "py -0p", "sys.executable", "WindowsApps", "PythonSoftwareFoundation"):
+            self.assertIn(word, paragraph)
+
     def test_readme_vi_mentions_init_config_and_the_command(self):
         text = read(README_VI)
         for word in ("init-config", "/odoo-kpi-skills:kpi", "label shift", "my_aliases.json"):

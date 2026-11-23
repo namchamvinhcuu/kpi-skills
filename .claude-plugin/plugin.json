@@ -1,6 +1,6 @@
 {
   "name": "odoo-kpi-skills",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Skills that let QA/QC staff ask Claude Code to build Odoo KPI dashboards from an Excel file in Odoo Documents, bound to existing data sources.",
   "author": {
     "name": "Autonsi"
