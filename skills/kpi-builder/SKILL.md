@@ -223,6 +223,11 @@ year's typed numbers against this year's live data, a block labelled with anothe
 than the Excel); `error` = a formula could not be evaluated: stop, do not publish, tell the user; `untyped` = cells
 that had no number to compare; `left to Excel formulas` = totals that stay the Excel's own. Run it again after every
 new bind. Many `differ` in one block is a reason to ask before publishing, never to change the spec silently.
+The list of `differ` cells is cut after 50 lines (`... N more`): never conclude from the first lines. Read the line
+`live data: ...` right under the summary: it says whether the live source has ANY number for the year, also in months
+the Excel left empty (previous-year cells and derived cells such as ratios do not count as data of the year). Say "the
+instance has no data for this year" only when that line says every cell that reads the data of the year is zero or `-`,
+and even then check the year with the user first (the year in the Excel headers, for example `26년` = 2026).
 
 ### 6. Publish (dry run, ask, apply)
 

@@ -35,6 +35,12 @@ VALUE = r"(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|-|N/A|<text>|error:\w+)"      # a 
 HEADER = re.compile(r"^dashboard sha256 ([0-9a-f]{64}), year (\d{4})(?:, time zone ([A-Za-z0-9_+\-/]+))?$")
 CELL = re.compile(r"^([A-Z]{1,3}\d+)[:,]? Excel (\S+?),? live (\S+?)(?: \((?:differ|error)\))?$")
 MORE = re.compile(r"^\.\.\. (\d+) more \(use --out for the full list\)$")
+# Updated ON PURPOSE for 0.1.2 round 2: only a cell that reads the data of the selected year counts, and the lines say so.
+LIVE_HAS = re.compile(r"^live data: (\d+) replaced cells read a non-zero number of year (\d{4}) "
+                      r"\(([A-Z]{1,3}\d+(?:, [A-Z]{1,3}\d+)*(?:, \.\.\.)?)\), typed or empty in the Excel: the live "
+                      r"source HAS data for year (\d{4})$")
+LIVE_ZERO = re.compile(r"^live data: every replaced cell that reads the data of year (\d{4}) is zero or '-': this can "
+                       r"mean the year has no data, but check the year first and ask the user before saying so$")
 MONTHS = "DEFGHIJKLMNO"
 
 
@@ -1084,8 +1090,11 @@ class CommandLineTests(ReconcileCase):
         lines = out.splitlines()
         self.assertTrue(HEADER.match(lines[0]), lines[0])
         self.assertTrue(SUMMARY.match(lines[1]), lines[1])
+        # Updated ON PURPOSE for 0.1.2: line 3 is now the `live data:` line (counts and cell references only, pinned by
+        # the regular expression); every line after it is still a cell line or the "... more" line and nothing else.
+        self.assertTrue(LIVE_HAS.match(lines[2]) or LIVE_ZERO.match(lines[2]), lines[2])
         value = VALUE
-        for line in lines[2:]:
+        for line in lines[3:]:
             self.assertTrue(re.match(r"^[A-Z]{1,3}\d+: Excel %s, live %s \((differ|error)\)$" % (value, value), line)
                             or MORE.match(line), line)
         for private in (rf.LABEL, "DK_REF", "SK_WM", "shipped", "dksk", "group_code", "Synthetic", FAKE_LOGIN, FAKE_DB,
@@ -1424,7 +1433,10 @@ class CombinedReviewFixTests(ReconcileCase):
         out = self.reconcile("--out", self.out_path)
         (line,) = [item for item in out.splitlines() if item.startswith("D5: ")]
         self.assertEqual(line, "D5: Excel %s, live 5 (differ)" % ("٣" * 39 + "…"))
-        self.assertLess(len(out), 400)                        # nothing near the 5000 digits reached the screen
+        # Updated ON PURPOSE for 0.1.2: the bound was 400; the new `live data:` line (about 135 characters, printed
+        # whenever a replaced cell exists) brings this output to 438. The intent is unchanged: 5000 digits in, a few
+        # hundred characters out, so 600 still fails the moment any part of the 5000 digits reaches the screen.
+        self.assertLess(len(out), 600)                        # nothing near the 5000 digits reached the screen
         report = json.loads(self.read(self.out_path).decode("utf-8"))
         self.assertEqual(report["cells"], [{"cell": "D5", "excel": "٣" * 39 + "…", "live": "5", "class": "differ"}])
 
@@ -1527,6 +1539,531 @@ class CombinedReviewFixTests(ReconcileCase):
         self.assertIn("--out is an input file (spec.json)", err)
         self.assertNotIn("--force", err)
         self.assertEqual(self.read(self.spec_path), before)
+
+
+# ---------------------------------------------------------------- 0.1.2: the `live data:` line
+
+class LiveDataLineTests(ReconcileCase):
+    """Root cause of 0.1.2: a QA run said "the instance has no data" for a year that had live numbers. The list of
+    differing cells is cut at 50 lines and the first 50 were all `-`; November had NO typed number in the Excel (untyped,
+    never evaluated), so its live numbers were not in the report at all. The `live data:` line says, whatever the Excel
+    typed, whether the live source has ANY number for the year. Invented sheets and numbers only."""
+
+    def incident_scene(self):
+        """Rows 5-9: twelve typed ones against a group the server has no row for (60 differing cells, live `-`);
+        row 10: ten typed zeros (equal) and Nov / Dec left EMPTY in the Excel, where the server holds 2230 and 150."""
+        rf.add_list_row(self.world, rf.REPORT, 2026, [0] * 10 + [2230, 150], "DK_REF", "shipped")
+        typed = {}
+        for row in range(5, 10):
+            typed.update(rf.typed_row(row, ["1"] * 12))
+        typed.update(rf.typed_row(10, ["0"] * 10 + [None, None]))
+        bindings = [rf.list_binding(row, "SK_ETC", "produced", zero="dash") for row in range(5, 10)]
+        self.scene(typed, bindings + [rf.list_binding(10, "DK_REF")])
+
+    @staticmethod
+    def live_lines(out):
+        return [line for line in out.splitlines() if line.startswith("live data:")]
+
+    @staticmethod
+    def refs_of(line):
+        return LIVE_HAS.match(line).group(3).replace(", ...", "").split(", ")
+
+    def test_live_numbers_only_in_months_the_excel_left_empty_are_reported_as_data_the_real_incident_regression(self):
+        # Regression test for the 0.1.1 incident: red before the fix (no `live data:` line, no `live_nonzero`).
+        self.incident_scene()
+        out = self.reconcile("--out", self.out_path)
+        self.assertEqual(counts_of(out), Counts(72, 70, 10, 0, 60, 0, 2, 0, 0))
+        self.assertEqual({live for _, live in diff_cells(out)}, {"-"})             # all 50 listed lines read `-`
+        self.assertEqual(len(diff_cells(out)), 50)
+        self.assertEqual(self.live_lines(out), ["live data: 2 replaced cells read a non-zero number of year 2026 (N10, "
+                                                "O10), typed or empty in the Excel: the live source HAS data for year "
+                                                "2026"])
+        self.assertEqual(json.loads(self.read(self.out_path).decode("utf-8"))["live_nonzero"], ["N10", "O10"])
+
+    def test_a_list_row_with_only_untyped_cells_still_reports_its_data(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [0, 0, 7], "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, [None, None, None]), [rf.list_binding(5, count=3)])
+        out = self.reconcile()
+        self.assertEqual(counts_of(out), Counts(3, 0, 0, 0, 0, 0, 3, 0, 0))
+        self.assertEqual(self.refs_of(self.live_lines(out)[0]), ["F5"])
+
+    def test_every_replaced_cell_reading_zero_or_dash_gets_the_warning_wording(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [0] * 12, "DK_REF", "shipped")
+        typed = dict(rf.typed_row(5, ["0"] * 6 + [None] * 6), **rf.typed_row(6, ["1", "1"]))
+        self.scene(typed, [rf.list_binding(5), rf.list_binding(6, "SK_ETC", "produced", count=2, zero="dash")])
+        out = self.reconcile()
+        self.assertEqual(counts_of(out).replaced, 14)
+        self.assertEqual(self.live_lines(out), ["live data: every replaced cell that reads the data of year 2026 is zero "
+                                                "or '-': this can mean the year has no data, but check the year first "
+                                                "and ask the user before saying so"])
+        self.assertTrue(LIVE_ZERO.match(self.live_lines(out)[0]))
+
+    def test_the_line_names_the_year_that_was_asked_for_so_the_wrong_year_is_visible(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [5] * 12, "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, ["5"] * 12), [rf.list_binding(5)])
+        self.assertEqual(self.live_lines(self.reconcile(year=2025)), [
+            "live data: every replaced cell that reads the data of year 2025 is zero or '-': this can mean the year has "
+            "no data, but check the year first and ask the user before saying so"])
+        (line,) = self.live_lines(self.reconcile(year=2026))
+        self.assertEqual(LIVE_HAS.match(line).group(1, 2, 4), ("12", "2026", "2026"))
+        rf.add_list_row(self.world, rf.REPORT, 2025, [9] * 12, "DK_REF", "shipped")      # the HAS wording names the year too
+        (line,) = self.live_lines(self.reconcile(year=2025))
+        self.assertEqual(LIVE_HAS.match(line).group(1, 2, 4), ("12", "2025", "2025"))
+
+    def test_live_line_is_none_when_nothing_was_replaced_and_run_prints_no_such_line(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [4], "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, ["4"]), [rf.list_binding(5, count=1)])
+        # nothing is replaced when the Excel already holds the very formula the binder writes: put it in the baseline
+        formula = json.loads(self.dashboard_bytes.decode("utf-8"))["sheets"][0]["cells"]["D5"]["content"]
+        baseline = json.loads(intake_xlsx.dump_bytes(self.baseline).decode("utf-8"))
+        baseline["sheets"][0]["cells"]["D5"]["content"] = formula
+        self.put(self.baseline_path, intake_xlsx.dump_bytes(baseline))
+        self.put(self.dashboard_path, rf.produce(baseline, self.spec)[2])
+        out = self.reconcile("--out", self.out_path)
+        self.assertEqual(counts_of(out).replaced, 0)
+        self.assertEqual(self.live_lines(out), [])
+        self.assertEqual(len(out.splitlines()), 2)                                  # the hash line and the summary only
+        self.assertEqual(json.loads(self.read(self.out_path).decode("utf-8"))["live_nonzero"], [])
+        for nonzero in ([], ["D5"]):                                                 # whatever live_nonzero holds
+            report = {"counts": {"replaced": 0}, "live_nonzero": nonzero}
+            self.assertIsNone(reconcile_kpi.live_line(report, 2026))
+
+    def test_more_than_eight_refs_are_cut_to_exactly_eight_with_an_ellipsis_and_eight_or_fewer_have_none(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [3] * 12, "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, [None] * 12), [rf.list_binding(5)])
+        (line,) = self.live_lines(self.reconcile())
+        self.assertEqual(LIVE_HAS.match(line).group(1), "12")                       # the count is all of them
+        self.assertEqual(self.refs_of(line), ["D5", "E5", "F5", "G5", "H5", "I5", "J5", "K5"])
+        self.assertIn("(D5, E5, F5, G5, H5, I5, J5, K5, ...)", line)
+        for count, ellipsis in ((8, False), (9, True), (1, False)):
+            with self.subTest(count=count):
+                report = {"counts": {"replaced": 50}, "live_nonzero": ["A%d" % i for i in range(1, count + 1)]}
+                text = reconcile_kpi.live_line(report, 2026)
+                self.assertEqual(len(self.refs_of(text)), min(count, 8))
+                self.assertEqual(", ...)" in text, ellipsis)
+                self.assertIn("%d replaced cells" % count, text)
+
+    def test_the_lines_come_in_the_order_hash_summary_live_data_differing_cells_more(self):
+        self.incident_scene()
+        lines = self.reconcile().splitlines()
+        self.assertTrue(HEADER.match(lines[0]), lines[0])
+        self.assertTrue(SUMMARY.match(lines[1]), lines[1])
+        self.assertTrue(LIVE_HAS.match(lines[2]), lines[2])
+        self.assertTrue(all(CELL.match(line) for line in lines[3:53]), lines[3:53])
+        self.assertTrue(MORE.match(lines[53]), lines[53])
+        self.assertEqual(len(lines), 54)
+
+    def test_the_line_is_printed_before_the_differing_cells_even_when_the_all_zero_wording_applies(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [0, 0], "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, ["4", "4"]), [rf.list_binding(5, count=2)])
+        lines = self.reconcile().splitlines()
+        self.assertEqual([bool(LIVE_ZERO.match(line)) for line in lines], [False, False, True, False, False])
+        self.assertTrue(CELL.match(lines[3]) and CELL.match(lines[4]))
+
+    def test_out_carries_live_nonzero_in_sheet_order_next_to_the_unchanged_keys(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [1, 0, 3], "DK_REF", "shipped")
+        rf.add_list_row(self.world, rf.REPORT, 2026, [0, 6, 0], "SK_WM", "shipped")
+        self.scene(dict(rf.typed_row(5, ["1", "0", None]), **rf.typed_row(6, ["0", "6", "0"])),
+                   [rf.list_binding(6, "SK_WM", count=3), rf.list_binding(5, count=3)])      # bound out of sheet order
+        self.reconcile("--out", self.out_path)
+        raw = self.read(self.out_path)
+        report = json.loads(raw.decode("utf-8"))
+        self.assertEqual(report["live_nonzero"], ["D5", "F5", "E6"])
+        self.assertEqual(sorted(report), ["cells", "counts", "live_nonzero", "sha256", "time_zone", "year"])
+        self.assertEqual(raw, intake_xlsx.dump_bytes(report))
+
+    def test_a_typed_cell_with_a_non_zero_live_value_is_listed_once_whether_equal_or_differing(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [5, 6, 7, 0], "DK_REF", "shipped")
+        # D5 typed and equal, E5 typed and differing, F5 untyped, G5 typed zero against zero: three non-zero cells
+        self.scene(rf.typed_row(5, ["5", "99", None, "0"]), [rf.list_binding(5, count=4)])
+        out = self.reconcile("--out", self.out_path)
+        self.assertEqual(counts_of(out), Counts(4, 3, 2, 0, 1, 0, 1, 0, 0))
+        nonzero = json.loads(self.read(self.out_path).decode("utf-8"))["live_nonzero"]
+        self.assertEqual(nonzero, ["D5", "E5", "F5"])
+        self.assertEqual(len(nonzero), len(set(nonzero)))
+        self.assertEqual(LIVE_HAS.match(self.live_lines(out)[0]).group(1), "3")
+
+    def test_a_dash_or_an_error_or_a_text_result_is_not_a_non_zero_live_value(self):
+        # Updated ON PURPOSE for 0.1.2 round 2: a counted cell must be a DIRECT read of a list of the selected year, so
+        # every cell reads list 1 (a current-year list with a name) instead of being a bare formula.
+        baseline = EvaluatorErrorTests.doc({"A1": "5", "A2": "6", "A3": "7"})
+        document = EvaluatorErrorTests.doc({c: '=ODOO.LIST(1,1,"%s")' % col for c, col in
+                                            (("A1", "dash"), ("A2", "gone"), ("A3", "txt"), ("A4", "na"),
+                                             ("A5", "zero"), ("A6", "three"))},
+                                           lists={"1": {"name": "Figures"}})
+        rows = {1: [{"dash": "-", "txt": "a server text", "na": "N/A", "zero": 0.0, "three": 3.0}]}
+        report = reconcile_kpi.compare(baseline, document, rows, {})
+        self.assertEqual([c["class"] for c in report["cells"]], ["differ", "error", "differ"])   # A1 dash and A3 text differ
+        self.assertEqual(report["counts"]["error"], 1)                                       # A2: no such column
+        self.assertEqual(report["live_nonzero"], ["A6"])
+
+    def test_an_untyped_cell_whose_evaluation_raises_is_ignored_and_changes_no_count_and_no_exit_code(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [1, 2, 3, 4], "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, ["1", "2", None, None]), [rf.list_binding(5, count=4)])
+        rc, plain, err = self.run_rec()
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(counts_of(plain), Counts(4, 2, 2, 0, 0, 0, 2, 0, 0))
+        real = validate_formulas.SheetEvaluator.value
+        for failure in (validate_formulas.SheetError("x"), ZeroDivisionError(), OverflowError(), ValueError("v"),
+                        RecursionError()):
+            def flaky(evaluator, cell, failure=failure):
+                if cell == "F5":                                      # an untyped cell
+                    raise failure
+                return real(evaluator, cell)
+
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(validate_formulas.SheetEvaluator, "value", flaky):
+                    rc, out, err = self.run_rec("--out", self.out_path, "--force")
+                self.assertEqual((rc, err), (0, ""))
+                self.assertEqual(counts_of(out), counts_of(plain))
+                self.assertEqual([c for c in out.splitlines() if CELL.match(c)], [])
+                self.assertEqual(json.loads(self.read(self.out_path).decode("utf-8"))["live_nonzero"], ["D5", "E5", "G5"])
+                self.assertEqual(self.refs_of(self.live_lines(out)[0]), ["D5", "E5", "G5"])
+
+    def test_an_error_on_a_typed_cell_is_still_an_error_and_not_a_non_zero_cell(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [1, 2], "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, ["1", "2"]), [rf.list_binding(5, count=2)])
+        real = validate_formulas.SheetEvaluator.value
+
+        def flaky(evaluator, cell):
+            if cell == "E5":
+                raise validate_formulas.SheetError("x")
+            return real(evaluator, cell)
+
+        with mock.patch.object(validate_formulas.SheetEvaluator, "value", flaky):
+            out = self.reconcile("--out", self.out_path)
+        self.assertEqual(counts_of(out), Counts(2, 2, 1, 0, 0, 1, 0, 0, 0))
+        self.assertEqual(json.loads(self.read(self.out_path).decode("utf-8"))["live_nonzero"], ["D5"])
+
+    def test_the_is_nonzero_test_accepts_a_non_zero_finite_number_and_nothing_else(self):
+        yes = (5, -3.2, 1e-300, -1, 0.5)
+        no = (0, 0.0, -0.0, True, False, float("nan"), float("inf"), float("-inf"), "-", "N/A", "5", "", None, [], {},
+              (1,))
+        for value in yes:
+            with self.subTest(value=value):
+                self.assertIs(reconcile_kpi._is_nonzero(value), True)
+        for value in no:
+            with self.subTest(value=value):
+                self.assertIs(reconcile_kpi._is_nonzero(value), False)
+
+    def test_a_live_number_is_never_a_secret_of_the_report_only_cell_references_and_a_count_are_printed(self):
+        self.incident_scene()
+        out = self.reconcile()
+        (line,) = self.live_lines(out)
+        for private in ("2230", "150", rf.LABEL, "DK_REF", "shipped", "dksk", FAKE_LOGIN, FAKE_DB, "127.0.0.1"):
+            self.assertNotIn(private, line)
+
+
+# ---------------------------------------------------------------- 0.1.2 round 2: only the data of the SELECTED year counts
+
+class LiveDataYearScopeTests(ReconcileCase):
+    """Review finding of round 1: `live_nonzero` counted the cells of a `year: previous` list, which are matched on the
+    next-year column and return the row of the YEAR BEFORE, so "the live source HAS data for year N" could be false.
+    Only a DIRECT read of the data of year N counts (an `ODOO.LIST` of a list that is not the previous-year one, an
+    `ODOO.PIVOT`); a derived cell, a constant, an unknown list or a name that may have lost its suffix to the 100
+    character cut does not. Invented lists and numbers only."""
+
+    LISTS = {"1": {"name": "Figures"}, "2": {"name": "Figures (previous year)"}, "3": {"name": "Other figures"}}
+    ROWS = {1: [], 2: [{"month_1": 5.0}], 3: [{"month_1": 4.0}]}
+
+    @staticmethod
+    def lread(list_id, column="month_1"):
+        return '=IFERROR(ODOO.LIST(%d,1,"%s")+0,0)' % (list_id, column)
+
+    def compare(self, cells, typed=None, lists=None, rows=None, pivots=None):
+        baseline = EvaluatorErrorTests.doc(typed or {})
+        document = EvaluatorErrorTests.doc(cells, lists=self.LISTS if lists is None else lists)
+        return reconcile_kpi.compare(baseline, document, self.ROWS if rows is None else rows, pivots or {})
+
+    @staticmethod
+    def zero_line(year=2026):
+        return ("live data: every replaced cell that reads the data of year %d is zero or '-': this can mean the year "
+                "has no data, but check the year first and ask the user before saying so" % year)
+
+    def test_the_reviewer_repro_a_previous_year_cell_is_not_data_of_the_year(self):
+        # list 1 = this year (no row), list 2 = the previous-year list that returns last year's row (5.0)
+        report = self.compare({"A1": self.lread(1), "A2": self.lread(2)})
+        self.assertEqual(report["counts"]["untyped"], 2)
+        self.assertEqual(report["live_nonzero"], [])
+        self.assertEqual(reconcile_kpi.live_line(report, 2026), self.zero_line())
+
+    def test_a_current_year_cell_next_to_it_makes_the_line_the_has_line_listing_only_that_cell(self):
+        report = self.compare({"A1": self.lread(1), "A2": self.lread(2), "A3": self.lread(3)})
+        self.assertEqual(report["live_nonzero"], ["A3"])
+        self.assertEqual(reconcile_kpi.live_line(report, 2026),
+                         "live data: 1 replaced cells read a non-zero number of year 2026 (A3), typed or empty in the "
+                         "Excel: the live source HAS data for year 2026")
+
+    def test_a_typed_previous_year_cell_that_equals_its_live_value_is_not_data_of_the_year_either(self):
+        report = self.compare({"A1": self.lread(2)}, typed={"A1": "5"})
+        self.assertEqual((report["counts"]["typed"], report["counts"]["equal"]), (1, 1))
+        self.assertEqual(report["live_nonzero"], [])
+
+    def test_the_same_through_the_binder_a_previous_year_row_with_an_empty_selected_year(self):
+        # the real flow: 2025 has a row, 2026 has none; row 5 = this year (untyped), row 6 = `year: previous` (typed, equal)
+        rf.add_list_row(self.world, rf.PRODUCTION, 2025, [300, 310], "DK_REF")
+        typed = rf.typed_row(6, ["300", "310"])
+        self.scene(typed, [rf.list_binding(5, source="production_group", count=2),
+                           rf.list_binding(6, source="production_group", count=2, year="previous")])
+        document = json.loads(self.dashboard_bytes.decode("utf-8"))
+        self.assertTrue(document["lists"]["2"]["name"].endswith("(previous year)"))        # the premise of the repro
+        out = self.reconcile("--out", self.out_path)
+        self.assertEqual(counts_of(out), Counts(4, 2, 2, 0, 0, 0, 2, 0, 0))                # the previous year cells match
+        self.assertEqual([line for line in out.splitlines() if line.startswith("live data:")], [self.zero_line()])
+        self.assertEqual(json.loads(self.read_file(self.out_path))["live_nonzero"], [])
+        rf.add_list_row(self.world, rf.PRODUCTION, 2026, [0, 7], "DK_REF")                 # now the selected year has data
+        out = self.reconcile("--out", self.out_path, "--force")
+        (line,) = [line for line in out.splitlines() if line.startswith("live data:")]
+        self.assertEqual(line, "live data: 1 replaced cells read a non-zero number of year 2026 (E5), typed or empty in "
+                               "the Excel: the live source HAS data for year 2026")
+        self.assertEqual(json.loads(self.read_file(self.out_path))["live_nonzero"], ["E5"])
+
+    def read_file(self, path):
+        return self.read(path).decode("utf-8")
+
+    def test_a_derived_cell_with_a_non_zero_value_is_not_data_typed_or_not(self):
+        cells = {"A1": '=ODOO.LIST(1,1,"month_1")', "A2": "=A1+5", "A3": "=IFERROR(A2/A1,0)+7", "A4": "=5"}
+        report = self.compare(cells, typed={"A3": "7"}, rows={1: [{"month_1": 0.0}]})
+        self.assertEqual((report["counts"]["untyped"], report["counts"]["typed"]), (3, 1))
+        self.assertEqual(report["live_nonzero"], [])                    # A2 = 5, A3 = 7, A4 = 5: none is a read
+
+    def test_a_list_name_of_exactly_one_hundred_characters_is_not_counted_because_its_suffix_may_be_cut(self):
+        cases = ((99, True), (100, False), (101, False))
+        for size, counted in cases:
+            with self.subTest(size=size):
+                report = self.compare({"A1": self.lread(3)}, lists={"3": {"name": "x" * size}})
+                self.assertEqual(report["live_nonzero"], ["A1"] if counted else [])
+        full = "x" * 85 + "(previous year)"                               # 100 characters that end with the suffix
+        self.assertEqual(len(full), 100)
+        self.assertEqual(self.compare({"A1": self.lread(3)}, lists={"3": {"name": full}})["live_nonzero"], [])
+        cut = ("y" * 100)[:100]                                           # what the binder leaves of a long title
+        self.assertEqual(self.compare({"A1": self.lread(3)}, lists={"3": {"name": cut}})["live_nonzero"], [])
+
+    def test_a_list_id_missing_from_the_document_or_without_a_usable_name_is_not_counted_and_never_crashes(self):
+        for lists in ({"1": {"name": "Figures"}}, {}, {"3": None}, {"3": "Other figures"}, {"3": ["Other figures"]},
+                      {"3": {}}, {"3": {"name": None}}, {"3": {"name": 5}}, {"3": {"name": ["Other figures"]}}):
+            with self.subTest(lists=lists):
+                report = self.compare({"A1": self.lread(3)}, lists=lists)
+                self.assertEqual(report["live_nonzero"], [])
+                self.assertEqual(report["counts"]["untyped"], 1)
+        document = EvaluatorErrorTests.doc({"A1": self.lread(3)})                       # no `lists` key at all
+        self.assertNotIn("lists", document)
+        report = reconcile_kpi.compare(EvaluatorErrorTests.doc({}), document, self.ROWS, {})
+        self.assertEqual(report["live_nonzero"], [])
+
+    def test_an_id_is_looked_up_whole_not_by_its_first_digit(self):
+        lists = {"1": {"name": "Figures"}, "12": {"name": "Figures (previous year)"}}
+        rows = {1: [{"month_1": 3.0}], 12: [{"month_1": 3.0}]}
+        report = self.compare({"A1": self.lread(12), "A2": self.lread(1)}, lists=lists, rows=rows)
+        self.assertEqual(report["live_nonzero"], ["A2"])
+        lists = {"1": {"name": "Figures (previous year)"}, "12": {"name": "Figures"}}
+        report = self.compare({"A1": self.lread(12), "A2": self.lread(1)}, lists=lists, rows=rows)
+        self.assertEqual(report["live_nonzero"], ["A1"])
+
+    def test_a_pivot_read_is_counted_typed_or_not(self):
+        read = '=IFERROR(ODOO.PIVOT(4,"__count","check_date:month","%s")+0,0)'
+        pivots = {4: {"measures": ["__count"], "months": {"04/2026": {"__count": 3.0}}}}
+        report = self.compare({"A1": read % "03/2026", "A2": read % "04/2026", "A3": read % "04/2026"},
+                              typed={"A3": "3"}, pivots=pivots)
+        self.assertEqual(report["live_nonzero"], ["A2", "A3"])           # A1 reads the empty March
+
+    def test_a_pivot_read_through_the_binder_is_counted(self):
+        rf.add_qms(self.world, "2026-04-10 12:00:00")
+        self.scene(rf.typed_row(5, [None] * 12), [rf.qms_binding(5)])
+        out = self.reconcile()
+        (line,) = [line for line in out.splitlines() if line.startswith("live data:")]
+        self.assertEqual(line, "live data: 1 replaced cells read a non-zero number of year 2026 (G5), typed or empty in "
+                               "the Excel: the live source HAS data for year 2026")
+
+    def test_reads_selected_year_table(self):
+        doc = {"lists": {"1": {"name": "Figures"}, "2": {"name": "Figures (previous year)"}, "12": {"name": "Wide"},
+                         "7": {"name": "z" * 99}, "8": {"name": "z" * 100}}}
+        table = (
+            (None, False), (5, False), (5.0, False), (True, False), (["=ODOO.LIST(1,1,\"a\")"], False), ({}, False),
+            ("", False), ("5", False), ("=5", False), ("text", False), ("=A1+B1", False), ("=IFERROR(A1/B1,0)", False),
+            ('=ODOO.LIST(1,1,"a")', True), ('=IFERROR(ODOO.LIST(1,1,"a")+0,0)', True), ('=ODOO.LIST(12,1,"a")', True),
+            ('=ODOO.LIST(2,1,"a")', False), ('=IFERROR(ODOO.LIST(2,1,"a")+0,0)', False),
+            ('=ODOO.LIST(3,1,"a")', False),                                  # an id the document does not know
+            ('=ODOO.LIST(7,1,"a")', True), ('=ODOO.LIST(8,1,"a")', False),
+            ('=IFERROR(ODOO.PIVOT(4,"__count","check_date:month","04/2026")+0,0)', True),
+            ('=ODOO.PIVOT(4,"__count","check_date:month","04/2026")+0', True),
+            ('=IFERROR(YEAR(ODOO.PIVOT.HEADER(1,"#check_date:month",1)),0)', False),   # the year probe: not a data read
+            ('=ODOO.LIST.HEADER(1,"a")', False),
+        )
+        for content, expected in table:
+            with self.subTest(content=content):
+                self.assertIs(reconcile_kpi._reads_selected_year(content, doc), expected)
+        for broken in ({}, {"lists": {}}, {"lists": {"1": 5}}):
+            with self.subTest(document=broken):
+                self.assertIs(reconcile_kpi._reads_selected_year('=ODOO.LIST(1,1,"a")', broken), False)
+                self.assertIs(reconcile_kpi._reads_selected_year('=ODOO.PIVOT(4,"__count","x","y")', broken), True)
+
+
+# ---------------------------------------------------------------- 0.1.2 round 3: a `zero: dash` cell is data too
+
+class LiveDataDashWrapperTests(ReconcileCase):
+    """Review finding of round 2: with `zero: dash` the binder writes the AREA cell as `=IF(H=0,"-",H)` and the read
+    itself in a helper cell H below the design area, so the area cell holds no `ODOO.` text and real data was reported as
+    none (the original incident again: the QA run used dash). The wrapper is looked through, ONE step, to the helper.
+    Invented lists and numbers only; every scene goes through the real binder."""
+
+    ZERO = ("live data: every replaced cell that reads the data of year 2026 is zero or '-': this can mean the year has "
+            "no data, but check the year first and ask the user before saying so")
+
+    @staticmethod
+    def has(count, refs, year=2026):
+        return ("live data: %d replaced cells read a non-zero number of year %d (%s), typed or empty in the Excel: the "
+                "live source HAS data for year %d" % (count, year, refs, year))
+
+    def live(self, out):
+        return [line for line in out.splitlines() if line.startswith("live data:")]
+
+    def report(self, *extra):
+        out = self.reconcile("--out", self.out_path, "--force", *extra)
+        return out, json.loads(self.read(self.out_path).decode("utf-8"))
+
+    def test_the_binder_really_writes_the_area_cell_as_a_wrapper_around_a_helper_below_the_area(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [4, 0, 9], "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, [None] * 3), [rf.list_binding(5, count=3, zero="dash")])
+        cells = json.loads(self.dashboard_bytes.decode("utf-8"))["sheets"][0]["cells"]
+        helper = re.fullmatch(r'=IF\(([A-Z]+\d+)=0,"-",\1\)', cells["D5"]["content"]).group(1)
+        self.assertGreater(intake_xlsx.split_ref(helper)[0], rf.AREA_ROWS)         # the premise: the read is below the area
+        self.assertIn("ODOO.LIST(", cells[helper]["content"])
+        self.assertNotIn("ODOO.", cells["D5"]["content"])
+
+    def test_reviewer_repro_list_data_read_through_dash_cells_lists_the_area_refs_like_number_cells_do(self):
+        results = {}
+        for zero in ("number", "dash"):
+            self.clear_rows(rf.REPORT)
+            rf.add_list_row(self.world, rf.REPORT, 2026, [4, 0, 9], "DK_REF", "shipped")        # month_1=4, month_2=0, month_3=9
+            self.scene(rf.typed_row(5, [None] * 3), [rf.list_binding(5, count=3, zero=zero)])
+            out, report = self.report()
+            results[zero] = (report["live_nonzero"], self.live(out))
+        self.assertEqual(results["number"], (["D5", "F5"], [self.has(2, "D5, F5")]))
+        self.assertEqual(results["dash"], results["number"])             # the area refs, never a helper ref
+
+    def test_typed_dash_cells_with_live_data_are_listed_by_area_ref_once(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [4, 0, 9], "DK_REF", "shipped")
+        self.scene(rf.typed_row(5, ["4", "0", "9"]), [rf.list_binding(5, count=3, zero="dash")])
+        out, report = self.report()
+        self.assertEqual(counts_of(out), Counts(3, 3, 3, 0, 0, 0, 0, 0, 0))
+        self.assertEqual(report["live_nonzero"], ["D5", "F5"])
+        self.assertEqual(self.live(out), [self.has(2, "D5, F5")])
+
+    def test_pivot_data_read_through_a_dash_cell_is_listed_by_the_area_ref(self):
+        rf.add_qms(self.world, "2026-04-10 12:00:00")
+        self.scene(rf.typed_row(5, [None] * 12), [rf.qms_binding(5, zero="dash")])
+        document = json.loads(self.dashboard_bytes.decode("utf-8"))
+        self.assertRegex(document["sheets"][0]["cells"]["G5"]["content"], r'^=IF\([A-Z]+\d+=0,"-",[A-Z]+\d+\)$')
+        out, report = self.report()
+        self.assertEqual(report["live_nonzero"], ["G5"])
+        self.assertEqual(self.live(out), [self.has(1, "G5")])
+
+    def test_dash_cells_of_a_previous_year_list_are_not_data_of_the_year_and_the_selected_year_data_is(self):
+        rf.add_list_row(self.world, rf.PRODUCTION, 2025, [300, 310], "DK_REF")
+        typed = rf.typed_row(6, ["300", "310"])
+        self.scene(typed, [rf.list_binding(5, source="production_group", count=2, zero="dash"),
+                           rf.list_binding(6, source="production_group", count=2, year="previous", zero="dash")])
+        out, report = self.report()
+        self.assertEqual(counts_of(out), Counts(4, 2, 2, 0, 0, 0, 2, 0, 0))             # last year's numbers are equal
+        self.assertEqual(report["live_nonzero"], [])
+        self.assertEqual(self.live(out), [self.ZERO])
+        rf.add_list_row(self.world, rf.PRODUCTION, 2026, [0, 7], "DK_REF")               # now the selected year has data
+        out, report = self.report()
+        self.assertEqual(report["live_nonzero"], ["E5"])
+        self.assertEqual(self.live(out), [self.has(1, "E5")])
+
+    def test_dash_cells_over_all_zero_data_or_no_row_get_the_warning_wording(self):
+        for values in ([0, 0, 0], None):
+            with self.subTest(values=values):
+                self.clear_rows(rf.REPORT)
+                if values is not None:
+                    rf.add_list_row(self.world, rf.REPORT, 2026, values, "DK_REF", "shipped")
+                self.scene(rf.typed_row(5, ["1", None, None]), [rf.list_binding(5, count=3, zero="dash")])
+                out, report = self.report()
+                self.assertEqual(counts_of(out).replaced, 3)
+                self.assertEqual(report["live_nonzero"], [])
+                self.assertEqual(self.live(out), [self.ZERO])
+
+    def test_dash_and_number_cells_in_one_block_are_listed_in_sheet_order_by_area_ref(self):
+        rf.add_list_row(self.world, rf.REPORT, 2026, [4, 0, 9], "DK_REF", "shipped")
+        rf.add_list_row(self.world, rf.REPORT, 2026, [0, 6, 0], "SK_WM", "shipped")
+        rf.add_list_row(self.world, rf.REPORT, 2026, [0, 0, 0], "DK_AC", "shipped")
+        self.scene(rf.typed_row(5, ["4", None, None]),
+                   [rf.list_binding(6, "SK_WM", count=3), rf.list_binding(7, "DK_AC", count=3, zero="dash"),
+                    rf.list_binding(5, count=3, zero="dash")])                          # bound out of sheet order
+        out, report = self.report()
+        self.assertEqual(report["live_nonzero"], ["D5", "F5", "E6"])
+        self.assertEqual(self.live(out), [self.has(3, "D5, F5, E6")])
+
+
+class ReadsSelectedYearDashWrapperTableTests(unittest.TestCase):
+    """`_reads_selected_year` on the `zero: dash` wrapper: ONE step to the helper cell, strict about what a wrapper is."""
+
+    LISTS = {"1": {"name": "Figures"}, "2": {"name": "Figures (previous year)"}}
+    LIST1, LIST2 = '=ODOO.LIST(1,1,"c")', '=ODOO.LIST(2,1,"c")'
+    PIVOT = '=IFERROR(ODOO.PIVOT(4,"__count","check_date:month","04/2026")+0,0)'
+
+    def doc(self, helpers, **top):
+        """A document whose first sheet holds `helpers` {ref: content}."""
+        return dict({"sheets": [{"cells": {ref: {"content": content} for ref, content in helpers.items()}}],
+                     "lists": self.LISTS}, **top)
+
+    def test_the_wrapper_is_looked_through_to_the_helper_cell(self):
+        wrapper = '=IF(D14=0,"-",D14)'
+        for helper, expected in ((self.LIST1, True), (self.LIST2, False), ('=IFERROR(ODOO.LIST(1,1,"c")+0,0)', True),
+                                 ('=IFERROR(ODOO.LIST(2,1,"c")+0,0)', False), (self.PIVOT, True),
+                                 ("=5", False), ("=A1+A2", False), ('=ODOO.LIST(9,1,"c")', False)):
+            with self.subTest(helper=helper):
+                self.assertIs(reconcile_kpi._reads_selected_year(wrapper, self.doc({"D14": helper})), expected)
+
+    def test_a_multi_letter_ref_and_seven_digits_are_a_wrapper_eight_digits_or_four_letters_are_not(self):
+        for ref, expected in (("AB123", True), ("D1234567", True), ("D12345678", False), ("ABCD1", False), ("D0", True)):
+            with self.subTest(ref=ref):
+                content = '=IF(%s=0,"-",%s)' % (ref, ref)
+                self.assertIs(reconcile_kpi._reads_selected_year(content, self.doc({ref: self.LIST1})), expected)
+
+    def test_a_missing_or_unusable_helper_cell_is_not_data(self):
+        wrapper = '=IF(D14=0,"-",D14)'
+        for cells in ({}, {"D15": self.LIST1}, {"D14": None}, {"D14": 5}, {"D14": ["x"]}, {"D14": ""}):
+            with self.subTest(cells=cells):
+                self.assertIs(reconcile_kpi._reads_selected_year(wrapper, self.doc(cells)), False)
+        document = {"sheets": [{"cells": {"D14": "=ODOO.LIST(1,1,\"c\")", "D13": {}, "D12": None}}], "lists": self.LISTS}
+        for ref in ("D14", "D13", "D12"):                              # a cell that is not an object / has no content
+            with self.subTest(cell=ref):
+                self.assertIs(reconcile_kpi._reads_selected_year('=IF(%s=0,"-",%s)' % (ref, ref), document), False)
+
+    def test_a_document_without_a_usable_first_sheet_is_not_data_and_never_crashes(self):
+        wrapper = '=IF(D14=0,"-",D14)'
+        cell = {"D14": {"content": self.LIST1}}
+        for sheets in (None, [], [5], [None], ["x"], "x", {"cells": cell}, [{"cells": None}], [{"cells": []}],
+                       [{"cells": "x"}], [{}]):
+            with self.subTest(sheets=sheets):
+                self.assertIs(reconcile_kpi._reads_selected_year(wrapper, {"sheets": sheets, "lists": self.LISTS}), False)
+        self.assertIs(reconcile_kpi._reads_selected_year(wrapper, {"lists": self.LISTS}), False)       # no `sheets` key
+        self.assertIs(reconcile_kpi._reads_selected_year(wrapper, {}), False)
+
+    def test_a_wrapper_with_two_different_refs_is_not_unwrapped(self):
+        document = self.doc({"D14": self.LIST1, "D15": self.LIST1})
+        self.assertIs(reconcile_kpi._reads_selected_year('=IF(D14=0,"-",D15)', document), False)
+        self.assertIs(reconcile_kpi._reads_selected_year('=IF(D14=0,"-",D14)', document), True)       # the same, one ref
+
+    def test_a_wrapper_of_a_wrapper_is_one_step_only(self):
+        document = self.doc({"D14": '=IF(D15=0,"-",D15)', "D15": self.LIST1})
+        self.assertIs(reconcile_kpi._reads_selected_year('=IF(D14=0,"-",D14)', document), False)
+        self.assertIs(reconcile_kpi._reads_selected_year('=IF(D15=0,"-",D15)', document), True)
+        selfish = self.doc({"D14": '=IF(D14=0,"-",D14)'})                    # a helper that is the wrapper itself
+        self.assertIs(reconcile_kpi._reads_selected_year('=IF(D14=0,"-",D14)', selfish), False)
+
+    def test_only_the_exact_wrapper_text_is_a_wrapper(self):
+        document = self.doc({"D14": self.LIST1, "d14": self.LIST1, "D١": self.LIST1})
+        for content in ('=IF(d14=0,"-",d14)', '=IF(D14=0, "-", D14)', '=IF(D14 =0,"-",D14)', '=IF(D14=0,"-",D14) ',
+                        ' =IF(D14=0,"-",D14)', '=IF(D14=0,"-",D14)+1', '=1+IF(D14=0,"-",D14)', '=IF(D14=0,"-",D14',
+                        '=IF(D14=0,"N/A",D14)', '=IF(D14=1,"-",D14)', '=if(D14=0,"-",D14)', '=IF(D١=0,"-",D١)',
+                        '=IF($D$14=0,"-",$D$14)', "=IF(D14=0,'-',D14)", '=IF(D14=0,"-",D14)\n'):
+            with self.subTest(content=content):
+                self.assertIs(reconcile_kpi._reads_selected_year(content, document), False)
+        self.assertIs(reconcile_kpi._reads_selected_year('=IF(D14=0,"-",D14)', document), True)
 
 
 if __name__ == "__main__":

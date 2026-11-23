@@ -3,7 +3,7 @@
 A Claude Code plugin: skills and small scripts that let QA/QC staff ask Claude Code to build a KPI dashboard
 in Odoo from an Excel file that sits in Documents, bound to data sources that already exist.
 
-Status: **0.1.1, work in progress**. QA/QC staff: read `README.vi.md` (Vietnamese guide).
+Status: **0.1.2, work in progress**. QA/QC staff: read `README.vi.md` (Vietnamese guide).
 
 What is in the plugin:
 

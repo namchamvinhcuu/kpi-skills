@@ -1106,6 +1106,50 @@ class SpreadsheetDocumentDocsTests(DocCase):
         self.assertIn("Status: **%s," % version, read(README))
 
 
+# ---------------------------------------------------------------- 0.1.2: the `live data:` line of reconcile
+
+class LiveDataLineDocsTests(DocCase):
+    """The skill must tell Claude to read the `live data:` line before saying an instance has no data (the 0.1.1
+    incident: the first 50 differ lines were all `-`, the agent concluded "no data" for a year that had numbers)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = read(SKILL)
+        found = section(cls.text, r"^5\.")
+        cls.step5 = found[1] if found else ""
+
+    def test_the_bind_step_is_where_the_paragraph_lives_and_it_exists(self):
+        self.assertTrue(self.step5, "no step 5 section in SKILL.md")
+        self.assertIn("live data:", self.step5)
+
+    def test_the_skill_says_the_differ_list_is_cut_after_50_lines_and_never_to_conclude_from_the_first_lines(self):
+        self.assertEqual(says(self.step5, r"cut after 50 lines", r"never conclude from the first lines"), [])
+
+    def test_the_skill_says_to_read_the_live_data_line_that_also_covers_months_the_excel_left_empty(self):
+        self.assertEqual(says(self.step5, r"read the line live data:", r"live source has any number for the year",
+                              r"months the excel left empty"), [])
+
+    def test_the_skill_allows_no_data_only_when_the_line_says_all_zero_and_asks_to_check_the_year_anyway(self):
+        # Updated ON PURPOSE for 0.1.2 round 2: the all-zero condition is "every cell that reads the data of the year"
+        self.assertEqual(says(self.step5, r"the instance has no data for this year\" only when that line says every "
+                                          r"cell that reads the data of the year is zero or -",
+                              r"even then check the year with the user"), [])
+
+    def test_the_skill_says_previous_year_cells_and_derived_cells_do_not_count_as_data_of_the_year(self):
+        self.assertEqual(says(self.step5, r"previous-year cells and derived cells such as ratios do not count as data "
+                                          r"of the year"), [])
+
+    def test_the_live_line_wording_of_the_script_is_the_one_the_skill_names(self):
+        # the skill quotes `live data: ...` and "every cell that reads the data of the year is zero"
+        zero = reconcile_kpi.live_line({"counts": {"replaced": 1}, "live_nonzero": []}, 2026)
+        has = reconcile_kpi.live_line({"counts": {"replaced": 1}, "live_nonzero": ["D5"]}, 2026)
+        for line in (zero, has):
+            self.assertTrue(line.startswith("live data: "))
+        self.assertIn("every replaced cell that reads the data of year 2026 is zero or '-'", zero)
+        self.assertIn("HAS data", has)
+        self.assertIn("read a non-zero number of year 2026 (D5)", has)
+
+
 # ---------------------------------------------------------------- manifest
 
 class ManifestTests(DocCase):

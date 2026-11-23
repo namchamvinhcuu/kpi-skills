@@ -224,8 +224,48 @@ def _show_typed(content):
     return text if len(text) <= 40 else text[:39] + "…"
 
 
+def _is_nonzero(live):
+    """True for a live NUMBER that is not zero (the texts `-`, `N/A` and an empty result read as no data)."""
+    return (isinstance(live, (int, float)) and not isinstance(live, bool) and math.isfinite(live) and live != 0)
+
+
+LIST_READ = re.compile(r"ODOO\.LIST\((\d+),")
+PREVIOUS_YEAR_SUFFIX = "(previous year)"          # written by bind_kpi._list_def after the title (name cut at 100)
+# `zero: dash` (bind_kpi): the area cell is `=IF(H=0,"-",H)` and the read itself sits in the helper cell H below the area
+DASH_WRAPPER = re.compile(r'=IF\(([A-Z]{1,3}[0-9]{1,7})=0,"-",\1\)', re.ASCII)
+
+
+def _reads_selected_year(content, document):
+    """True when a cell is a DIRECT read of the data of the year selected in the Year filter: an `ODOO.LIST` of a list
+    that is not the previous-year one (that one is matched on the next-year column and returns the row of the YEAR
+    BEFORE), or an `ODOO.PIVOT` (with the selected year empty the year probe makes every pivot read 0, the previous-year
+    cells included). A derived cell (ratio, previous period, sum), a constant and a list whose name may have lost its
+    suffix to the 100-character cut tell nothing about the year, so they are not data. The `zero: dash` wrapper of an
+    area cell is looked through, one step only, to the read in its helper cell (the usual binding: without that the
+    area cell holds no `ODOO.` text and real data would be reported as none)."""
+    if not isinstance(content, str):
+        return False
+    dash = DASH_WRAPPER.fullmatch(content)
+    if dash:                                          # `zero: dash`: look through that ONE wrapper to the helper cell
+        sheets = document.get("sheets")
+        cells = sheets[0].get("cells") if isinstance(sheets, list) and sheets and isinstance(sheets[0], dict) else None
+        helper = cells.get(dash.group(1)) if isinstance(cells, dict) else None
+        content = helper.get("content") if isinstance(helper, dict) else None
+        if not isinstance(content, str):
+            return False
+    match = LIST_READ.search(content)
+    if match:
+        definition = document.get("lists", {}).get(match.group(1))
+        name = definition.get("name") if isinstance(definition, dict) else None
+        return isinstance(name, str) and len(name) < 100 and not name.endswith(PREVIOUS_YEAR_SUFFIX)
+    return "ODOO.PIVOT(" in content
+
+
 def compare(baseline, document, lists, pivots):
-    """The report dict: counts and the list of differing / failing cells (all of them)."""
+    """The report dict: counts, the list of differing / failing cells (all of them) and `live_nonzero`: every replaced
+    cell that reads the data of the selected year (`_reads_selected_year`), typed or not in the Excel, whose live value
+    is a non-zero number (a cell the Excel left empty has nothing to compare, but its live value still says whether the
+    year has data)."""
     base_sheet, new_sheet = baseline["sheets"][0], document["sheets"][0]
     base_cells, new_cells = base_sheet["cells"], new_sheet["cells"]
     area_rows = base_sheet["rowNumber"]
@@ -233,6 +273,7 @@ def compare(baseline, document, lists, pivots):
     counts = {"replaced": 0, "typed": 0, "equal": 0, "rounded": 0, "differ": 0, "error": 0, "untyped": 0,
               "had_text": 0, "formula_left": 0}
     shown = []
+    nonzero = []
     for ref in sorted(new_cells, key=intake_xlsx.split_ref):
         if intake_xlsx.split_ref(ref)[0] > area_rows:
             continue                                   # helper / probe rows sit below the design area
@@ -254,6 +295,8 @@ def compare(baseline, document, lists, pivots):
                 continue
             if live is None:
                 live = 0.0
+            if _is_nonzero(live) and _reads_selected_year(after, document):
+                nonzero.append(ref)
             outcome = classify(before, live) if isinstance(live, (str, int, float)) else "differ"
             counts[outcome] += 1
             if outcome == "differ":
@@ -262,7 +305,12 @@ def compare(baseline, document, lists, pivots):
             counts["had_text"] += 1
         else:
             counts["untyped"] += 1
-    return {"counts": counts, "cells": shown}
+            try:
+                if _reads_selected_year(after, document) and _is_nonzero(evaluator.value(ref)):
+                    nonzero.append(ref)
+            except (validate_formulas.SheetError, ArithmeticError, ValueError, RecursionError):
+                pass                                   # nothing was typed here, so an unreadable cell is not an error
+    return {"counts": counts, "cells": shown, "live_nonzero": nonzero}
 
 
 def summary_line(counts):
@@ -270,6 +318,24 @@ def summary_line(counts):
             "%d had text; %d formula cells left to Excel (not compared)"
             % (counts["replaced"], counts["typed"], counts["equal"], counts["rounded"], counts["differ"],
                counts["error"], counts["untyped"], counts["had_text"], counts["formula_left"]))
+
+
+LIVE_EXAMPLES = 8
+
+
+def live_line(report, year):
+    """One line that says whether the live data has ANY number, whatever the Excel had typed (months the Excel left
+    empty are not compared, so the list of differences alone can hide that the year has data). None when nothing was
+    replaced."""
+    if not report["counts"]["replaced"]:
+        return None
+    nonzero = report["live_nonzero"]
+    if not nonzero:
+        return ("live data: every replaced cell that reads the data of year %d is zero or '-': this can mean the year "
+                "has no data, but check the year first and ask the user before saying so" % year)
+    shown = ", ".join(nonzero[:LIVE_EXAMPLES]) + (", ..." if len(nonzero) > LIVE_EXAMPLES else "")
+    return ("live data: %d replaced cells read a non-zero number of year %d (%s), typed or empty in the Excel: the "
+            "live source HAS data for year %d" % (len(nonzero), year, shown, year))
 
 
 # ---------------------------------------------------------------- command line
@@ -318,6 +384,9 @@ def run(args, out, err, client_factory=odoo_rpc.Client):
     counts = report["counts"]
     print("dashboard sha256 %s, year %d%s" % (produced, args.year, ", time zone %s" % tz if tz else ""), file=out)
     print(summary_line(counts), file=out)
+    line = live_line(report, args.year)
+    if line:
+        print(line, file=out)
     for item in report["cells"][:MAX_SHOWN]:
         print("%s: Excel %s, live %s (%s)" % (item["cell"], item["excel"], item["live"], item["class"]), file=out)
     if len(report["cells"]) > MAX_SHOWN:
